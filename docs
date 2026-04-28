@@ -1,0 +1,236 @@
+##################################################################
+# Table 1: kafka_file_tracking
+#
+# Partition key : file_id (String)
+# Sort key      : none
+# Billing       : On-demand (PAY_PER_REQUEST)
+# GSI           : status-index  →  PK: status (S), SK: updated_at (S), projects ALL
+# Warm throughput: 12,000 RU / 4,000 WU  (table + GSI)
+# TTL           : Off
+# PITR          : Off
+# Deletion prot : Off
+##################################################################
+resource "aws_dynamodb_table" "kafka_file_tracking" {
+  name         = "kafka_file_tracking"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "file_id"
+
+  # ── Attribute definitions (only indexed attributes go here) ──
+  attribute {
+    name = "file_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "status"
+    type = "S"
+  }
+
+  attribute {
+    name = "updated_at"
+    type = "S"
+  }
+
+  # ── Global Secondary Index ────────────────────────────────────
+  global_secondary_index {
+    name            = "status-index"
+    hash_key        = "status"
+    range_key       = "updated_at"
+    projection_type = "ALL"
+
+    # warm_throughput inside GSI block requires AWS provider >= 5.26
+    warm_throughput {
+      read_units_per_second  = var.kafka_file_tracking_gsi_warm_read_units
+      write_units_per_second = var.kafka_file_tracking_gsi_warm_write_units
+    }
+  }
+
+  # ── Table-level warm throughput ───────────────────────────────
+  warm_throughput {
+    read_units_per_second  = var.kafka_file_tracking_warm_read_units
+    write_units_per_second = var.kafka_file_tracking_warm_write_units
+  }
+
+  # ── TTL (Off) ─────────────────────────────────────────────────
+  ttl {
+    enabled        = false
+    attribute_name = ""
+  }
+
+  # ── PITR ──────────────────────────────────────────────────────
+  point_in_time_recovery {
+    enabled = var.kafka_file_tracking_pitr_enabled
+  }
+
+  # ── Encryption (AWS-owned key — default) ──────────────────────
+  server_side_encryption {
+    enabled = false
+  }
+
+  deletion_protection_enabled = var.kafka_file_tracking_deletion_protection
+  table_class                 = "STANDARD"
+
+  tags = {
+    Name = "kafka_file_tracking"
+  }
+}
+
+
+##################################################################
+# Table 2: kafka_entity_locks
+#
+# Partition key : entity (String)
+# Sort key      : none
+# Billing       : On-demand (PAY_PER_REQUEST)
+# GSI           : none
+# Warm throughput: 12,000 RU / 4,000 WU
+# TTL           : ON  — attribute name: "ttl"
+# PITR          : Off
+# Deletion prot : Off
+##################################################################
+resource "aws_dynamodb_table" "kafka_entity_locks" {
+  name         = "kafka_entity_locks"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "entity"
+
+  # ── Attribute definitions ─────────────────────────────────────
+  attribute {
+    name = "entity"
+    type = "S"
+  }
+
+  # ── Table-level warm throughput ───────────────────────────────
+  warm_throughput {
+    read_units_per_second  = var.kafka_entity_locks_warm_read_units
+    write_units_per_second = var.kafka_entity_locks_warm_write_units
+  }
+
+  # ── TTL (On) ──────────────────────────────────────────────────
+  # "ttl" attribute must be a Number (epoch seconds) written by the app.
+  ttl {
+    enabled        = true
+    attribute_name = "ttl"
+  }
+
+  # ── PITR ──────────────────────────────────────────────────────
+  point_in_time_recovery {
+    enabled = var.kafka_entity_locks_pitr_enabled
+  }
+
+  # ── Encryption (AWS-owned key — default) ──────────────────────
+  server_side_encryption {
+    enabled = false
+  }
+
+  deletion_protection_enabled = var.kafka_entity_locks_deletion_protection
+  table_class                 = "STANDARD"
+
+  tags = {
+    Name = "kafka_entity_locks"
+  }
+}
+
+
+variable "aws_region" {
+  description = "AWS region where DynamoDB tables will be created"
+  type        = string
+  default     = "us-east-2" # US East (Ohio) — same as dev
+}
+
+variable "environment" {
+  description = "Deployment environment (e.g., dev, uat, prod)"
+  type        = string
+  default     = "uat"
+}
+
+variable "project" {
+  description = "Project name for tagging"
+  type        = string
+  default     = "kafka-tracking"
+}
+
+# ---------------------------------------------------------------
+# kafka_file_tracking — warm throughput settings
+# ---------------------------------------------------------------
+variable "kafka_file_tracking_warm_read_units" {
+  description = "Warm throughput read units per second for kafka_file_tracking table"
+  type        = number
+  default     = 12000
+}
+
+variable "kafka_file_tracking_warm_write_units" {
+  description = "Warm throughput write units per second for kafka_file_tracking table"
+  type        = number
+  default     = 4000
+}
+
+variable "kafka_file_tracking_gsi_warm_read_units" {
+  description = "Warm throughput read units per second for status-index GSI"
+  type        = number
+  default     = 12000
+}
+
+variable "kafka_file_tracking_gsi_warm_write_units" {
+  description = "Warm throughput write units per second for status-index GSI"
+  type        = number
+  default     = 4000
+}
+
+variable "kafka_file_tracking_pitr_enabled" {
+  description = "Enable Point-in-Time Recovery for kafka_file_tracking"
+  type        = bool
+  default     = false
+}
+
+variable "kafka_file_tracking_deletion_protection" {
+  description = "Enable deletion protection for kafka_file_tracking"
+  type        = bool
+  default     = false
+}
+
+# ---------------------------------------------------------------
+# kafka_entity_locks — warm throughput settings
+# ---------------------------------------------------------------
+variable "kafka_entity_locks_warm_read_units" {
+  description = "Warm throughput read units per second for kafka_entity_locks table"
+  type        = number
+  default     = 12000
+}
+
+variable "kafka_entity_locks_warm_write_units" {
+  description = "Warm throughput write units per second for kafka_entity_locks table"
+  type        = number
+  default     = 4000
+}
+
+variable "kafka_entity_locks_pitr_enabled" {
+  description = "Enable Point-in-Time Recovery for kafka_entity_locks"
+  type        = bool
+  default     = false
+}
+
+variable "kafka_entity_locks_deletion_protection" {
+  description = "Enable deletion protection for kafka_entity_locks"
+  type        = bool
+  default     = false
+}
+# uat.tfvars — override defaults for the UAT environment
+# Usage: terraform apply -var-file="uat.tfvars"
+
+aws_region  = "us-east-2"
+environment = "uat"
+project     = "kafka-tracking"
+
+# kafka_file_tracking
+kafka_file_tracking_warm_read_units      = 12000
+kafka_file_tracking_warm_write_units     = 4000
+kafka_file_tracking_gsi_warm_read_units  = 12000
+kafka_file_tracking_gsi_warm_write_units = 4000
+kafka_file_tracking_pitr_enabled         = false
+kafka_file_tracking_deletion_protection  = false
+
+# kafka_entity_locks
+kafka_entity_locks_warm_read_units     = 12000
+kafka_entity_locks_warm_write_units    = 4000
+kafka_entity_locks_pitr_enabled        = false
+kafka_entity_locks_deletion_protection = false
