@@ -1,30 +1,61 @@
-resource "aws_glue_job" "glue_kafka_etl_batch" {
-  name              = "glue_kafka_etl_batch"
-  role_arn          = var.glue_iam_role_arn
-  glue_version      = "5.1"
-  worker_type       = "G.1X"
-  number_of_workers = 10
-  max_retries       = 0
-  timeout           = 480
-
-  command {
-    name            = "glueetl"
-    script_location = "${local.script_location}glue_kafka_etl_batch.py"
-    python_version  = "3"
+{
+  "PermissionSetName": "OptumCloud-RedshiftReadOnly-QueryEditor",
+  "Description": "Read-only AWS access plus Redshift Serverless Query Editor v2 access. SQL-level read-only enforced via database GRANTs.",
+  "SessionDuration": "PT1H",
+  "AwsManagedPolicies": [
+    "arn:aws:iam::aws:policy/ReadOnlyAccess",
+    "arn:aws:iam::aws:policy/AmazonRedshiftQueryEditorV2NoSharing"
+  ],
+  "InlinePolicy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "AllowConnectToServerlessWorkgroup",
+        "Effect": "Allow",
+        "Action": [
+          "redshift-serverless:GetCredentials"
+        ],
+        "Resource": "arn:aws:redshift-serverless:us-east-2:064977599863:workgroup/fd4cb30e-85d0-4bbf-bb6b-13dddeb66913"
+      },
+      {
+        "Sid": "AllowQueryEditorV2DescribeAndDataApi",
+        "Effect": "Allow",
+        "Action": [
+          "redshift-serverless:ListWorkgroups",
+          "redshift-serverless:ListNamespaces",
+          "redshift-serverless:GetWorkgroup",
+          "redshift-serverless:GetNamespace",
+          "redshift-data:ExecuteStatement",
+          "redshift-data:BatchExecuteStatement",
+          "redshift-data:CancelStatement",
+          "redshift-data:DescribeStatement",
+          "redshift-data:GetStatementResult",
+          "redshift-data:ListStatements",
+          "redshift-data:ListDatabases",
+          "redshift-data:ListSchemas",
+          "redshift-data:ListTables",
+          "redshift-data:DescribeTable"
+        ],
+        "Resource": "*"
+      },
+      {
+        "Sid": "DenyServerlessWriteOperations",
+        "Effect": "Deny",
+        "Action": [
+          "redshift-serverless:CreateNamespace",
+          "redshift-serverless:DeleteNamespace",
+          "redshift-serverless:UpdateNamespace",
+          "redshift-serverless:CreateWorkgroup",
+          "redshift-serverless:DeleteWorkgroup",
+          "redshift-serverless:UpdateWorkgroup",
+          "redshift-serverless:CreateSnapshot",
+          "redshift-serverless:DeleteSnapshot",
+          "redshift-serverless:RestoreFromSnapshot",
+          "redshift-serverless:TagResource",
+          "redshift-serverless:UntagResource"
+        ],
+        "Resource": "*"
+      }
+    ]
   }
-
-  default_arguments = merge(local.common_default_arguments, {
-    "--batch_size"      = "200"
-    "--dynamodb_table"  = "kafka_file_tracking"
-    "--max_retry_count" = "3"
-    "--s3_folder"       = "ALL"
-    "--extra-py-files"  = "s3://${var.data_bucket}/data/glue_job/glue_app_deps.zip"
-  })
-
-  execution_property {
-    max_concurrent_runs = 20
-  }
-
-  tags       = local.full_tags
-  depends_on = [aws_glue_catalog_database.ops_db_s3_redshift]
 }
