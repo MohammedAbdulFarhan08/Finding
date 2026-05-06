@@ -1,61 +1,21 @@
-{
-  "PermissionSetName": "OptumCloud-RedshiftReadOnly-QueryEditor",
-  "Description": "Read-only AWS access plus Redshift Serverless Query Editor v2 access. SQL-level read-only enforced via database GRANTs.",
-  "SessionDuration": "PT1H",
-  "AwsManagedPolicies": [
-    "arn:aws:iam::aws:policy/ReadOnlyAccess",
-    "arn:aws:iam::aws:policy/AmazonRedshiftQueryEditorV2NoSharing"
-  ],
-  "InlinePolicy": {
-    "Version": "2012-10-17",
-    "Statement": [
-      {
-        "Sid": "AllowConnectToServerlessWorkgroup",
-        "Effect": "Allow",
-        "Action": [
-          "redshift-serverless:GetCredentials"
-        ],
-        "Resource": "arn:aws:redshift-serverless:us-east-2:064977599863:workgroup/fd4cb30e-85d0-4bbf-bb6b-13dddeb66913"
-      },
-      {
-        "Sid": "AllowQueryEditorV2DescribeAndDataApi",
-        "Effect": "Allow",
-        "Action": [
-          "redshift-serverless:ListWorkgroups",
-          "redshift-serverless:ListNamespaces",
-          "redshift-serverless:GetWorkgroup",
-          "redshift-serverless:GetNamespace",
-          "redshift-data:ExecuteStatement",
-          "redshift-data:BatchExecuteStatement",
-          "redshift-data:CancelStatement",
-          "redshift-data:DescribeStatement",
-          "redshift-data:GetStatementResult",
-          "redshift-data:ListStatements",
-          "redshift-data:ListDatabases",
-          "redshift-data:ListSchemas",
-          "redshift-data:ListTables",
-          "redshift-data:DescribeTable"
-        ],
-        "Resource": "*"
-      },
-      {
-        "Sid": "DenyServerlessWriteOperations",
-        "Effect": "Deny",
-        "Action": [
-          "redshift-serverless:CreateNamespace",
-          "redshift-serverless:DeleteNamespace",
-          "redshift-serverless:UpdateNamespace",
-          "redshift-serverless:CreateWorkgroup",
-          "redshift-serverless:DeleteWorkgroup",
-          "redshift-serverless:UpdateWorkgroup",
-          "redshift-serverless:CreateSnapshot",
-          "redshift-serverless:DeleteSnapshot",
-          "redshift-serverless:RestoreFromSnapshot",
-          "redshift-serverless:TagResource",
-          "redshift-serverless:UntagResource"
-        ],
-        "Resource": "*"
-      }
-    ]
-  }
-}
+cat << 'EOF' > /tmp/test-jwt.py
+import jwt, time, sys, requests
+
+APP_ID = "3458323"
+INSTALLATION_ID = "125947289"
+KEY_PATH = "/tmp/key.pem"
+
+with open(KEY_PATH) as f:
+    private_key = f.read()
+
+now = int(time.time())
+payload = {"iat": now - 60, "exp": now + 540, "iss": APP_ID}
+token = jwt.encode(payload, private_key, algorithm="RS256")
+
+r = requests.post(
+    f"https://api.github.com/app/installations/{INSTALLATION_ID}/access_tokens",
+    headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+)
+print(f"Status: {r.status_code}")
+print(r.text)
+EOF
