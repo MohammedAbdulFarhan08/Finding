@@ -1,21 +1,11 @@
-cat << 'EOF' > /tmp/test-jwt.py
-import jwt, time, sys, requests
+APP_ID=3458323
+NOW=$(date +%s)
+HEADER=$(echo -n '{"alg":"RS256","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+PAYLOAD=$(echo -n "{\"iat\":$((NOW-60)),\"exp\":$((NOW+540)),\"iss\":\"$APP_ID\"}" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+SIG=$(echo -n "$HEADER.$PAYLOAD" | openssl dgst -sha256 -sign /tmp/key.pem | base64 -w0 | tr '+/' '-_' | tr -d '=')
+JWT="$HEADER.$PAYLOAD.$SIG"
 
-APP_ID = "3458323"
-INSTALLATION_ID = "125947289"
-KEY_PATH = "/tmp/key.pem"
-
-with open(KEY_PATH) as f:
-    private_key = f.read()
-
-now = int(time.time())
-payload = {"iat": now - 60, "exp": now + 540, "iss": APP_ID}
-token = jwt.encode(payload, private_key, algorithm="RS256")
-
-r = requests.post(
-    f"https://api.github.com/app/installations/{INSTALLATION_ID}/access_tokens",
-    headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-)
-print(f"Status: {r.status_code}")
-print(r.text)
-EOF
+curl -i -X POST \
+  -H "Authorization: Bearer $JWT" \
+  -H "Accept: application/vnd.github+json" \
+  https://api.github.com/app/installations/125947289/access_tokens
