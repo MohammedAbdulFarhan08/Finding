@@ -1,11 +1,55 @@
-APP_ID=3458323
-NOW=$(date +%s)
-HEADER=$(echo -n '{"alg":"RS256","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
-PAYLOAD=$(echo -n "{\"iat\":$((NOW-60)),\"exp\":$((NOW+540)),\"iss\":\"$APP_ID\"}" | base64 -w0 | tr '+/' '-_' | tr -d '=')
-SIG=$(echo -n "$HEADER.$PAYLOAD" | openssl dgst -sha256 -sign /tmp/key.pem | base64 -w0 | tr '+/' '-_' | tr -d '=')
-JWT="$HEADER.$PAYLOAD.$SIG"
+# =============================================================================
+# values-jfrog-override.yaml
+#
+# Place this file at: ~/Desktop/csi-secrets-charts/values-jfrog-override.yaml
+#
+# INSTALL:
+#   helm install secrets-provider-aws \
+#     ascp-2.0.0/secrets-store-csi-driver-provider-aws \
+#     --namespace kube-system \
+#     -f values-jfrog-override.yaml
+# =============================================================================
 
-curl -i -X POST \
-  -H "Authorization: Bearer $JWT" \
-  -H "Accept: application/vnd.github+json" \
-  https://api.github.com/app/installations/125947289/access_tokens
+# ---------------------------------------------------------------------------
+# ASCP Provider Image  (overrides public.ecr.aws → JFrog ECR cache)
+# ---------------------------------------------------------------------------
+image:
+  repository: centraluhg.jfrog.io/glb-docker-ecr-rem-cache/aws-secrets-manager/secrets-store-csi-driver-provider-aws
+  pullPolicy: IfNotPresent
+  tag: "2.0.0-linux-amd64"
+
+awsRegion: "us-east-2"
+
+# =============================================================================
+# CSI Driver subchart image overrides  (overrides registry.k8s.io → JFrog)
+# =============================================================================
+secrets-store-csi-driver:
+  install: true
+
+  syncSecret:
+    enabled: true
+
+  enableSecretRotation: true
+  rotationPollInterval: 3600s
+
+  linux:
+    image:
+      repository: centraluhg.jfrog.io/glb-docker-registry-k8s-rem-cache/csi-secrets-store/driver
+      tag: v1.5.5
+      pullPolicy: IfNotPresent
+
+    crds:
+      image:
+        repository: centraluhg.jfrog.io/glb-docker-registry-k8s-rem-cache/csi-secrets-store/driver-crds
+        tag: v1.5.4
+        pullPolicy: IfNotPresent
+
+    registrarImage:
+      repository: centraluhg.jfrog.io/glb-docker-registry-k8s-rem-cache/sig-storage/csi-node-driver-registrar
+      tag: v2.15.0
+      pullPolicy: IfNotPresent
+
+    livenessProbeImage:
+      repository: centraluhg.jfrog.io/glb-docker-uhg-loc/uhg-goldenimages/kubernetes-csi-livenessprobe
+      tag: "latest"
+      pullPolicy: Always
