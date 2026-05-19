@@ -1,4 +1,4 @@
 aws iam create-open-id-connect-provider \
-  --url https://oidc.eks.us-east-2.amazonaws.com/id/4804356930378C9FBDB42F9BA435AB05 \
+  --url https://oidc.eks.us-east-2.amazonaws.com/id/4804356930378C9FBD842F9BA435AB05 \
   --client-id-list sts.amazonaws.com \
-  --thumbprint-list E8:09:8C:70:8E:7E:20:88:EE:8B:1C:90:3D:D9:54:D9:A4:9A:6C:DC
+  --thumbprint-list E8098C708E7E2088EE8B1C903DD954D9A49A6CDC
