@@ -1,38 +1,11 @@
-data "aws_caller_identity" "current" {}
+Access Request & Environment Rollout
+Access to these permission sets is provisioned through Secure and must be requested based on your team role and project requirements. The following JIT (Just-In-Time) role mappings are currently active for the Development account:
 
-data "aws_eks_cluster" "cluster" {
-  name = var.eks_cluster_name
-}
+Data Engineer: AWS_064977599863_DataEngineer_JIT
+Data Science: AWS_064977599863_DataScience_JIT
+Data Analyst: AWS_064977599863_DataAnalyst_JIT
+Redshift Reader: AWS_603613246258_Redshift_Reader_JIT
+Developer : Coming
 
-locals {
-  oidc_provider = replace(data.aws_eks_cluster.cluster.identity[0].oidc[0].issuer, "https://", "")
-}
 
-data "aws_iam_policy_document" "eks_pod_identity_trust" {
-  statement {
-    sid     = "AllowIRSA"
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${local.oidc_provider}"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${local.oidc_provider}:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-
-    condition {
-      test     = "StringLike"
-      variable = "${local.oidc_provider}:sub"
-      values   = ["system:serviceaccount:pass:${var.service_account}"]
-    }
-  }
-}
-
-data "aws_iam_role" "share_services_secrets_role" {
-  name = "share-services-secrets-role-${var.environment}"
-}
+Note: The roles documented here are provisioned for the Development account only. SSO role configuration for UAT and Production accounts is also underway. This document will be updated as each environment is provisioned.
