@@ -1,8 +1,38 @@
-THUMBPRINT=$(openssl s_client -servername oidc.eks.us-east-2.amazonaws.com \
-  -connect oidc.eks.us-east-2.amazonaws.com:443 2>/dev/null \
-  | openssl x509 -fingerprint -noout | cut -d'=' -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+data "aws_caller_identity" "current" {}
 
-aws iam create-open-id-connect-provider \
-  --url https://oidc.eks.us-east-2.amazonaws.com/id/4804356930378C9FBD842F9BA435AB05 \
-  --client-id-list sts.amazonaws.com \
-  --thumbprint-list $THUMBPRINT
+data "aws_eks_cluster" "cluster" {
+  name = var.eks_cluster_name
+}
+
+locals {
+  oidc_provider = replace(data.aws_eks_cluster.cluster.identity[0].oidc[0].issuer, "https://", "")
+}
+
+data "aws_iam_policy_document" "eks_pod_identity_trust" {
+  statement {
+    sid     = "AllowIRSA"
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${local.oidc_provider}"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "${local.oidc_provider}:sub"
+      values   = ["system:serviceaccount:pass:${var.service_account}"]
+    }
+  }
+}
+
+data "aws_iam_role" "share_services_secrets_role" {
+  name = "share-services-secrets-role-${var.environment}"
+}
