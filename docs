@@ -1,13 +1,11 @@
-Good question — let me break it down:
+To clarify what "completely automated" means — when a developer merges code into a target branch (e.g. feature branch into dev), the GitHub Actions CI pipeline automatically:
 
-The CI/CD pipeline works like this across all environments:
+1. Builds the container image
+2. Tags it (based on our tagging standards) and pushes it to JFrog Artifactory
+3. Updates the image tag in the platform-apps repo (in the kustomize overlay for that environment)
 
-1. A developer pushes code and raises a PR to the target branch (feature → dev, dev → uat, uat → main).
-2. GitHub Actions CI kicks off — it builds the container image, pushes it to JFrog, and then updates the image tag in the deployment manifest in the platform-apps repo (under the corresponding overlay folder for that environment).
-3. ArgoCD watches the platform-apps repo for changes. When it detects the updated manifest, it syncs the new image to EKS.
+ArgoCD is watching the platform-apps repo, so when it sees that updated image tag, it automatically syncs and deploys the new version to EKS. For Dev and UAT, that sync is automatic. For Prod, it requires a Change Request and a manual sync.
 
-For Dev and UAT, that sync is automatic — as soon as the manifest updates, ArgoCD deploys it. For Prod, there's a Change Request gate and the sync is manual.
+So in a normal deploy, no one has to touch anything manually — the whole chain from code merge to running in the cluster is automated.
 
-So when I say "completely automated" — I mean the CI pipeline handles building, pushing the image, AND updating the manifest with the new image tag. No one has to manually touch the platform-apps repo during a normal deploy.
-
-For deploying a specific/older version (rollback scenario): yes, you'd update the image tag in the platform-apps repo under the relevant overlay (e.g. overlays/dev or overlays/uat) to point to the older image version in JFrog, and ArgoCD would pick up that change and sync it. That's a manual git commit to the repo — no new CI build needed since the image already exists in JFrog.
+For rollbacks — since every build is stored in JFrog with its own unique tag, all previous versions are still available. To roll back, you'd just update the image tag in the platform-apps repo (under the relevant environment overlay) to point to the older version. ArgoCD picks up that change and deploys it. No new build is needed since the image already exists in Artifactory. This is a manual git commit today — no additional functionality is needed, it's just a tag change in the kustomize file.
