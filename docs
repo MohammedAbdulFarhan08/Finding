@@ -1,11 +1,5 @@
-To clarify what "completely automated" means — when a developer merges code into a target branch (e.g. feature branch into dev), the GitHub Actions CI pipeline automatically:
+Hi Julie,
 
-1. Builds the container image
-2. Tags it (based on our tagging standards) and pushes it to JFrog Artifactory
-3. Updates the image tag in the platform-apps repo (in the kustomize overlay for that environment)
+Just a quick update — I will be on leave for two days, Wednesday and Thursday. I apologize for not giving you a heads-up earlier.
 
-ArgoCD is watching the platform-apps repo, so when it sees that updated image tag, it automatically syncs and deploys the new version to EKS. For Dev and UAT, that sync is automatic. For Prod, it requires a Change Request and a manual sync.
-
-So in a normal deploy, no one has to touch anything manually — the whole chain from code merge to running in the cluster is automated.
-
-For rollbacks — since every build is stored in JFrog with its own unique tag, all previous versions are still available. To roll back, you'd just update the image tag in the platform-apps repo (under the relevant environment overlay) to point to the older version. ArgoCD picks up that change and deploys it. No new build is needed since the image already exists in Artifactory. This is a manual git commit today — no additional functionality is needed, it's just a tag change in the kustomize file.
+Also, I had a call with the Turnberry team, and they informed me that my contract has been extended for another six months. Thank you all for your continued support
