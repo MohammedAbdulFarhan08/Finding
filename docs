@@ -1,11 +1,13 @@
-Access Request & Environment Rollout
-Access to these permission sets is provisioned through Secure and must be requested based on your team role and project requirements. The following JIT (Just-In-Time) role mappings are currently active for the Development account:
+Good question — let me break it down:
 
-Data Engineer: AWS_064977599863_DataEngineer_JIT
-Data Science: AWS_064977599863_DataScience_JIT
-Data Analyst: AWS_064977599863_DataAnalyst_JIT
-Redshift Reader: AWS_603613246258_Redshift_Reader_JIT
-Developer : Coming
+The CI/CD pipeline works like this across all environments:
 
+1. A developer pushes code and raises a PR to the target branch (feature → dev, dev → uat, uat → main).
+2. GitHub Actions CI kicks off — it builds the container image, pushes it to JFrog, and then updates the image tag in the deployment manifest in the platform-apps repo (under the corresponding overlay folder for that environment).
+3. ArgoCD watches the platform-apps repo for changes. When it detects the updated manifest, it syncs the new image to EKS.
 
-Note: The roles documented here are provisioned for the Development account only. SSO role configuration for UAT and Production accounts is also underway. This document will be updated as each environment is provisioned.
+For Dev and UAT, that sync is automatic — as soon as the manifest updates, ArgoCD deploys it. For Prod, there's a Change Request gate and the sync is manual.
+
+So when I say "completely automated" — I mean the CI pipeline handles building, pushing the image, AND updating the manifest with the new image tag. No one has to manually touch the platform-apps repo during a normal deploy.
+
+For deploying a specific/older version (rollback scenario): yes, you'd update the image tag in the platform-apps repo under the relevant overlay (e.g. overlays/dev or overlays/uat) to point to the older image version in JFrog, and ArgoCD would pick up that change and sync it. That's a manual git commit to the repo — no new CI build needed since the image already exists in JFrog.
