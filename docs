@@ -1,2 +1,21 @@
+---
+
+**3.4 Developer**
+
 Grants developers the access required to build, debug, and operate applications across AWS services. Combines read/write access to core data and messaging services with read-only visibility into infrastructure and controlled access to secrets and configuration.
-AWS ServiceAccess TypeScope / NotesAmazon S3Read / Write / DeleteObject-level get, put, list, tag, multipart upload, and delete. Bucket metadata is readable; bucket creation/deletion is excluded.CloudWatch / X-RayRead / Filter / TraceFilter and read log events, view metrics, and read X-Ray traces and service graphs for monitoring and troubleshooting.Core Infrastructure (EC2, Auto Scaling, ELB, Lambda, Route 53)Read-OnlyDescribe and list access for infrastructure discovery and service troubleshooting. No provisioning or modification.DynamoDB / DAXItem-Level Read / WriteRead, write, query, scan, batch, PartiQL, and TTL update operations. Table creation/deletion is excluded.RDS / RedshiftOperational / QueryConnect to and operate RDS instances (start/stop/reboot/snapshot). Run Redshift queries and retrieve results via Data API and Serverless. RDS snapshot modification is scoped to ops-rds-tool-* only.EKS / ECRCluster Read + Image PullDescribe EKS clusters, access the Kubernetes API, authenticate to ECR, and pull images. No cluster creation/deletion.Secrets Manager / SSM / KMSRead + DecryptRead secrets and parameters, list metadata, decrypt, and generate data keys for application support.Messaging & Workflow (SQS, SNS, EventBridge, Step Functions, API Gateway)Limited AccessSend/receive/purge SQS messages, publish/subscribe SNS, read EventBridge and Step Functions metadata, and API Gateway GET.Analytics (Athena, Glue)Query + ReadRun Athena queries and retrieve results. Read Glue catalog, job, crawler, and workflow metadata.Specialty Databases (DocumentDB, Neptune, Timestream, MemoryDB, Keyspaces, QLDB)Read / ConnectDescribe, connect, and query for application diagnostics. No administrative actions.Account Visibility (AWS Artifact, Health, Support, Trusted Advisor, Cost Explorer)Read / ReportAccess compliance reports, account health, support case metadata, Trusted Advisor checks, and cost/billing information
+
+| AWS Service | Access Type | Scope / Notes |
+|---|---|---|
+| Amazon S3 | Read / Write / Delete | Object-level get, put, list, tag, multipart upload, and delete. Bucket metadata is readable; bucket creation/deletion is excluded. |
+| CloudWatch / X-Ray | Read / Filter / Trace | Filter and read log events, view metrics, and read X-Ray traces and service graphs for monitoring and troubleshooting. |
+| Core Infrastructure (EC2, Auto Scaling, ELB, Lambda, Route 53) | Read-Only | Describe and list access for infrastructure discovery and service troubleshooting. No provisioning or modification. |
+| DynamoDB / DAX | Item-Level Read / Write | Read, write, query, scan, batch, PartiQL, and TTL update operations. Table creation/deletion is excluded. |
+| RDS / Redshift | Operational / Query | Connect to and operate RDS instances (start/stop/reboot/snapshot). Run Redshift queries and retrieve results via Data API and Serverless. RDS snapshot modification is scoped to `ops-rds-tool-*` only. |
+| EKS / ECR | Cluster Read + Image Pull | Describe EKS clusters, access the Kubernetes API, authenticate to ECR, and pull images. No cluster creation/deletion. |
+| Secrets Manager / SSM / KMS | Read + Decrypt | Read secrets and parameters, list metadata, decrypt, and generate data keys for application support. |
+| Messaging & Workflow (SQS, SNS, EventBridge, Step Functions, API Gateway) | Limited Access | Send/receive/purge SQS messages, publish/subscribe SNS, read EventBridge and Step Functions metadata, and API Gateway GET. |
+| Analytics (Athena, Glue) | Query + Read | Run Athena queries and retrieve results. Read Glue catalog, job, crawler, and workflow metadata. |
+| Specialty Databases (DocumentDB, Neptune, Timestream, MemoryDB, Keyspaces, QLDB) | Read / Connect | Describe, connect, and query for application diagnostics. No administrative actions. |
+| Account Visibility (AWS Artifact, Health, Support, Trusted Advisor, Cost Explorer) | Read / Report | Access compliance reports, account health, support case metadata, Trusted Advisor checks, and cost/billing information. |
+
+*Note: RDS snapshot modification and deletion is restricted to resources prefixed with `ops-rds-tool-*` to prevent accidental removal of production snapshots.*
