@@ -1,21 +1,343 @@
+# CORE-1745 — Create / Manage DB Users for IAM Authentication
+
+**Repo:** `pass-automation`
+**Status:** In Development
+**Assignee:** Afaaq Zarger · **Reporter:** Carson Desotel
+**Related merged work:** CORE-1720 (`pass-automation` PR #102 — `aws-access-tools` db connection scripts)
+
+This document is a complete implementation brief. Everything needed to execute the
+ticket is below; no external chat context is required.
+
 ---
 
-**3.4 Developer**
+## 1. Problem statement
 
-Grants developers the access required to build, debug, and operate applications across AWS services. Combines read/write access to core data and messaging services with read-only visibility into infrastructure and controlled access to secrets and configuration.
+Today every engineer connects to the Aurora PostgreSQL clusters as a shared,
+high-privilege account (the master `dbadmin`, or per-DB service accounts like
+`dbcommunity`). That means: no least privilege (everyone can write/DDL), no
+individual attribution (`SELECT current_user` returns the same shared user for
+everyone), and a shared static password that has to be circulated.
 
-| AWS Service | Access Type | Scope / Notes |
-|---|---|---|
-| Amazon S3 | Read / Write / Delete | Object-level get, put, list, tag, multipart upload, and delete. Bucket metadata is readable; bucket creation/deletion is excluded. |
-| CloudWatch / X-Ray | Read / Filter / Trace | Filter and read log events, view metrics, and read X-Ray traces and service graphs for monitoring and troubleshooting. |
-| Core Infrastructure (EC2, Auto Scaling, ELB, Lambda, Route 53) | Read-Only | Describe and list access for infrastructure discovery and service troubleshooting. No provisioning or modification. |
-| DynamoDB / DAX | Item-Level Read / Write | Read, write, query, scan, batch, PartiQL, and TTL update operations. Table creation/deletion is excluded. |
-| RDS / Redshift | Operational / Query | Connect to and operate RDS instances (start/stop/reboot/snapshot). Run Redshift queries and retrieve results via Data API and Serverless. RDS snapshot modification is scoped to `ops-rds-tool-*` only. |
-| EKS / ECR | Cluster Read + Image Pull | Describe EKS clusters, access the Kubernetes API, authenticate to ECR, and pull images. No cluster creation/deletion. |
-| Secrets Manager / SSM / KMS | Read + Decrypt | Read secrets and parameters, list metadata, decrypt, and generate data keys for application support. |
-| Messaging & Workflow (SQS, SNS, EventBridge, Step Functions, API Gateway) | Limited Access | Send/receive/purge SQS messages, publish/subscribe SNS, read EventBridge and Step Functions metadata, and API Gateway GET. |
-| Analytics (Athena, Glue) | Query + Read | Run Athena queries and retrieve results. Read Glue catalog, job, crawler, and workflow metadata. |
-| Specialty Databases (DocumentDB, Neptune, Timestream, MemoryDB, Keyspaces, QLDB) | Read / Connect | Describe, connect, and query for application diagnostics. No administrative actions. |
-| Account Visibility (AWS Artifact, Health, Support, Trusted Advisor, Cost Explorer) | Read / Report | Access compliance reports, account health, support case metadata, Trusted Advisor checks, and cost/billing information. |
+In the old Rally cluster there was at least `app_ro` / `app_rw` role separation.
+The new federated accounts currently have none of that.
 
-*Note: RDS snapshot modification and deletion is restricted to resources prefixed with `ops-rds-tool-*` to prevent accidental removal of production snapshots.*
+## 2. Goal
+
+1. Recreate read-only / read-write role separation, per database.
+2. Move **human** login from shared passwords to **IAM database authentication**
+   (engineers generate a short-lived token via `aws rds generate-db-auth-token`
+   instead of knowing a password).
+
+### Acceptance criteria (from the ticket)
+- [ ] `app_ro` (read-only) and `app_rw` (read-write) roles are created.
+- [ ] A user can generate a token and log in with `aws rds generate-db-auth-token`.
+
+---
+
+## 3. Decided approach
+
+Create two **IAM login roles** per cluster — `app_ro` and `app_rw` — both granted
+`rds_iam` so they authenticate by IAM token only (password login is rejected once
+`rds_iam` is granted).
+
+**SSO role → DB role mapping:**
+
+| SSO role / tool access level | DB user  | Privilege            |
+|------------------------------|----------|----------------------|
+| Read SSO role (access `r`)   | `app_ro` | `SELECT` only        |
+| Contributor (access `c`)     | `app_rw` | `SELECT/INSERT/UPDATE/DELETE` |
+| Owner (access `o`)           | master / service accounts (unchanged) | admin / break-glass / migrations |
+
+**Enforcement lives at the PostgreSQL privilege layer, not at IAM.** `app_ro`
+genuinely cannot write regardless of how it is reached. This is acceptable and
+deliberate given the environment realities below.
+
+### Why this shape (key rationale)
+- **Most developers share the Contributor SSO role.** Per-individual DB users
+  would add N×M management overhead with no real attribution, because IAM DB auth
+  maps the *IAM principal* to the DB user — and the shared role is a single
+  principal. So shared `app_ro`/`app_rw` is the correct model here.
+- **Separation that this actually buys:** anyone on the Read role genuinely cannot
+  write, and the shared `dbadmin` password is removed from daily use. Restricting
+  *write* to a small group is a prod-only concern (see §8), not a dev/uat one.
+
+---
+
+## 4. Environment facts (confirmed — do not re-derive)
+
+| Item | Value |
+|------|-------|
+| Dev account | `064977599863` |
+| UAT account | `922181234939` |
+| Prod account | `603613246258` |
+| Region (resources) | `us-east-2` |
+| SSO region (Identity Center) | `us-east-1` |
+| IAM DB authentication on clusters | **ENABLED** (no cluster modify needed) |
+| Master credentials | Managed in AWS Secrets Manager (`MasterUserSecret`) |
+| dev community cluster id | `pass-community` |
+| dev community **DbClusterResourceId** | `cluster-FBHHOH4XCOCWBALKUIEU3MMCNQ` |
+| dev community **local tunnel port** | `15433` (5432 + dev 10000 + community 1) |
+
+**SSO profiles** (from `aws-access-tools/install.sh`):
+- `pass-dev-owner` → SSO role `Owner_network_restricted`
+- `pass-dev-contributor` → SSO role `Contributor_network_restricted`
+- (No `pass-dev-read` profile exists yet — created in Phase 4.)
+
+**Contributor role policies:** `PowerUserAccess`, `ReadOnlyAccess`, `AmazonQFullAccess`.
+- `PowerUserAccess` allows all actions except `iam:*` / `organizations:*` /
+  `account:*` on `Resource: "*"`. `rds-db:connect` is in the `rds-db` namespace,
+  so **Contributor already has `rds-db:connect` on `*`** → the write path needs
+  **no IAM policy attached**.
+
+**Read SSO role:** `ReadOnlyAccess` only — it lacks **both** `ssm:StartSession`
+(can't open the tunnel) **and** `rds-db:connect` (can't auth). The read tier
+therefore needs a custom policy (Phase 4).
+
+**Connection mechanics** (already built in CORE-1720 — do not rebuild):
+- `aws-access-tools/get-to-rds` opens an SSM port-forward to the cluster (Terminal 1).
+- `aws-access-tools/get-to-psql` connects `psql` to `localhost:<port>`, generating
+  an IAM token for the password (Terminal 2).
+- Local port = `RDS_PORT(5432) + env_offset + db_offset`
+  (env: dev 10000 / uat 20000 / prod 30000; db: admin 0, community 1, eligibility 2,
+  offerings 3, utilization 4).
+- TLS flags in use: `sslmode=require sslrootcert=system gssencmode=disable`
+  (uses OS trust store; the RDS CA bundle download in `install.sh` is now vestigial).
+- The username today is resolved by `db_user()` in
+  `aws-access-tools/configs/common/root.profile` (db name → master/service account).
+
+## 5. Scope boundaries
+
+**In scope:** human read-only / read-write IAM DB auth for the three Aurora clusters
+(`pass-community`, `pass-eligibility`, `pass-offerings`).
+
+**Out of scope (do NOT fold in):**
+- **Debezium / CDC user (CORE-1587):** needs a long-lived password user with
+  `REPLICATION` in Secrets Manager. IAM tokens expire (~15 min) and won't survive a
+  CDC reconnect. Keep entirely separate.
+- **Application services** (`pass-utilization`, etc.): currently password-in-Secrets-
+  Manager. Migrating apps to IAM auth is a separate follow-on (token refresh +
+  connection-rate ceiling considerations).
+- **Tightening Contributor write access** (swapping `PowerUserAccess` for something
+  narrower): security-hardening follow-on, prod-focused.
+
+---
+
+## 6. The three clusters (per-cluster parameters)
+
+| Cluster | Database name | Table-owner service account |
+|---------|---------------|-----------------------------|
+| `pass-community`   | `community`   | `dbcommunity`   |
+| `pass-eligibility` | `eligibility` | `dbeligibility` |
+| `pass-offerings`   | `offerings`   | `dbofferings`   |
+
+> The table-owner assumption must be confirmed by recon (Phase 2, Step A) before
+> applying. If recon shows a different owner, update the `\set owner` value.
+
+---
+
+## 7. Implementation plan (phased)
+
+### Phase 1 — Add the role-creation SQL to the repo
+Add per-cluster SQL under a new directory, e.g. `aws-access-tools/db-roles/`:
+- `db-roles/core-1745-roles.sql` — parameterized template (below), **or**
+- `db-roles/community.sql`, `db-roles/eligibility.sql`, `db-roles/offerings.sql`
+  (same content, different `\set owner` / `\set appdb`).
+Plus a short `db-roles/README.md` documenting the run procedure.
+
+The SQL is **additive and reversible** — master/service accounts keep working
+throughout. See §9 for the full script.
+
+### Phase 2 — Prove the dev/community slice end-to-end
+Run on **dev / pass-community only** first. This validates every in-scope
+assumption with reversible changes and **no IAM edits**.
+
+**Step A — Recon (read-only), as `dbcommunity`:**
+```bash
+# Terminal 1
+get-to-rds -d community
+# Terminal 2
+get-to-psql -d community
+```
+```sql
+SELECT current_user, current_database();
+SELECT tableowner, count(*) FROM pg_tables WHERE schemaname='public' GROUP BY tableowner;
+\dn
+```
+Confirm the table owner; adjust `\set owner` if needed. `\q` to exit.
+
+**Step B — Create roles, as the MASTER user:**
+```bash
+# Get master creds (Contributor can read this secret)
+SECRET_ARN=$(aws rds describe-db-clusters --db-cluster-identifier pass-community \
+  --query 'DBClusters[0].MasterUserSecret.SecretArn' --output text \
+  --region us-east-2 --profile pass-dev-contributor)
+
+aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" \
+  --query SecretString --output text --region us-east-2 --profile pass-dev-contributor
+# -> {"username":"dbadmin","password":"..."}
+
+# Run the script through the existing tunnel (Terminal 1 must still be open)
+psql "host=localhost port=15433 dbname=community user=dbadmin \
+  sslmode=require sslrootcert=system gssencmode=disable" \
+  -f aws-access-tools/db-roles/core-1745-roles.sql
+```
+
+**Step C — Validate WRITE path (Contributor → `app_rw` IAM token):**
+```bash
+HOST=$(aws rds describe-db-clusters --db-cluster-identifier pass-community \
+  --query 'DBClusters[0].Endpoint' --output text --region us-east-2 --profile pass-dev-contributor)
+
+TOKEN=$(aws rds generate-db-auth-token --hostname "$HOST" --port 5432 \
+  --username app_rw --region us-east-2 --profile pass-dev-contributor)
+
+PGPASSWORD="$TOKEN" psql "host=localhost port=15433 dbname=community user=app_rw \
+  sslmode=require sslrootcert=system gssencmode=disable"
+```
+```sql
+SELECT current_user;                                       -- expect app_rw
+CREATE TEMP TABLE _t(x int); INSERT INTO _t VALUES (1);    -- write succeeds
+```
+
+**Step D — Validate READ path is genuinely read-only (`app_ro`):**
+```bash
+TOKEN=$(aws rds generate-db-auth-token --hostname "$HOST" --port 5432 \
+  --username app_ro --region us-east-2 --profile pass-dev-contributor)
+PGPASSWORD="$TOKEN" psql "host=localhost port=15433 dbname=community user=app_ro \
+  sslmode=require sslrootcert=system gssencmode=disable"
+```
+```sql
+SELECT current_user;            -- expect app_ro
+SELECT 1;                       -- read works
+CREATE TEMP TABLE _t2(x int);   -- expect: ERROR permission denied
+```
+**Slice passes** when write works as `app_rw` and is denied as `app_ro`.
+This already satisfies both acceptance criteria.
+
+### Phase 3 — Tool integration (coordinate with Carson; same repo)
+Make the tool resolve the DB username by **access level**, so a contributor
+connects as `app_rw` and a read user as `app_ro`, while owner keeps the master/
+service accounts. See proposed `db_user()` change in §10.
+- Files: `aws-access-tools/configs/common/root.profile` (db_user), and the callers
+  in `aws-access-tools/get-to-psql` and `aws-access-tools/get-to-rds`.
+- This is Carson's tool — open as a PR for his review.
+
+### Phase 4 — Read tier (depends on an external IAM change)
+- Add a `pass-dev-read` profile block to `aws-access-tools/install.sh` pointing at
+  the Read SSO role, and add an `r` access level to `get-to-psql` / `get-to-rds`.
+- **IAM policy (NOT in this repo):** the Read SSO permission set needs a custom
+  policy granting `ssm:StartSession` (for the tunnel) and `rds-db:connect` scoped
+  to `app_ro`. This lives in the IAM/Terraform repo or Identity Center, not in
+  `pass-automation`. Flag as an external dependency.
+  Example resource ARN (dev community):
+  `arn:aws:rds-db:us-east-2:064977599863:dbuser:cluster-FBHHOH4XCOCWBALKUIEU3MMCNQ/app_ro`
+
+### Phase 5 — Roll out
+- Apply the SQL to dev `pass-eligibility` and `pass-offerings`
+  (fetch their `DbClusterResourceId` via `describe-db-clusters`).
+- Replicate to UAT (`922181234939`) and Prod (`603613246258`) with their own
+  cluster resource IDs and profiles.
+
+---
+
+## 8. Production nuance (note, don't solve now)
+In prod, Contributor probably shouldn't hold write. The clean path later is a
+dedicated read-only permission set mapped to `app_ro`, with write reserved for a
+smaller group. Keep dev/uat as Contributor→`app_rw` for now.
+
+---
+
+## 9. Role-creation SQL (canonical artifact)
+Save as `aws-access-tools/db-roles/core-1745-roles.sql`. Edit the two `\set`
+values per cluster.
+
+```sql
+-- CORE-1745 : IAM-auth read-only / read-write database roles
+-- Run AS the cluster MASTER user via the SSM tunnel. Idempotent, reversible.
+-- Per cluster: community/dbcommunity, eligibility/dbeligibility, offerings/dbofferings
+\set owner   dbcommunity
+\set appdb   community
+\set ON_ERROR_STOP on
+
+-- [1] IAM login roles (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_ro') THEN CREATE ROLE app_ro WITH LOGIN; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_rw') THEN CREATE ROLE app_rw WITH LOGIN; END IF;
+END $$;
+
+-- [2] Force IAM-token auth (password login rejected)
+GRANT rds_iam TO app_ro;
+GRANT rds_iam TO app_rw;
+
+-- [3] DB + schema entry
+GRANT CONNECT ON DATABASE :"appdb" TO app_ro, app_rw;
+GRANT USAGE   ON SCHEMA public      TO app_ro, app_rw;
+
+-- [4] Object privileges — run AS the owner (master is rds_superuser, not a true
+--     superuser, so it can't grant on tables it doesn't own).
+GRANT :"owner" TO CURRENT_USER;
+SET ROLE :"owner";
+
+GRANT SELECT                         ON ALL TABLES    IN SCHEMA public TO app_ro;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES    IN SCHEMA public TO app_rw;
+GRANT USAGE, SELECT                  ON ALL SEQUENCES IN SCHEMA public TO app_rw;
+
+-- Future objects (THE most-missed step — without it, new tables are invisible)
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT                         ON TABLES    TO app_ro;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES    TO app_rw;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT                  ON SEQUENCES TO app_rw;
+
+RESET ROLE;
+
+-- [5] Verify
+\du app_ro
+\du app_rw
+```
+> If `GRANT :"owner" TO CURRENT_USER` fails as master, run step [4] while connected
+> as the owner itself (`get-to-psql -d community`); steps [1]–[2] still need master.
+> If the DB uses schemas beyond `public`, repeat [3]–[4] per schema.
+
+---
+
+## 10. Proposed `db_user()` change (Phase 3)
+Current `db_user()` resolves db name → master/service account. Change it to take
+the access level so the username follows the tier (`app_ro`/`app_rw` are identical
+across clusters; the *database* still selects host/port).
+
+```bash
+# configs/common/root.profile
+# Usage: user=$(db_user "<db_name>" "<access_level>")
+db_user() {
+  local db_name="$1"
+  local access="$2"
+  case "$access" in
+    r) echo "app_ro" ;;                       # read tier
+    c) echo "app_rw" ;;                        # read-write tier
+    o)                                         # owner = admin / break-glass
+      case "$db_name" in
+        admin)        echo "${RDS_USER}" ;;
+        community)    echo "dbcommunity" ;;
+        eligibility)  echo "dbeligibility" ;;
+        offerings)    echo "dbofferings" ;;
+        *)            echo "dbadmin" ;;
+      esac ;;
+    *) echo "dbadmin" ;;
+  esac
+}
+```
+Update callers in `get-to-psql` and `get-to-rds` to pass `${access_level}` as the
+second arg: `rds_user="$(db_user "${db_name}" "${access_level}")"`.
+
+---
+
+## 11. Open items to confirm
+- [ ] Table owner per cluster (recon, Phase 2A). Default assumption: `db<name>`.
+- [ ] Whether master can `GRANT <owner> TO CURRENT_USER`; else use the owner-run fallback.
+- [ ] `DbClusterResourceId` for `pass-eligibility` and `pass-offerings` (dev), and all three for UAT/Prod.
+- [ ] Confirm database name == `community`/`eligibility`/`offerings` (via `\l` / `\conninfo`).
+- [ ] Read-tier IAM policy ownership (which repo / Identity Center) — external dependency.
+
+## 12. Coordination
+- Phase 3 (tool) and Phase 4 (read profile) touch Carson's `aws-access-tools` — PR
+  for his review; his Teams note already anticipates the `db_user()` cutover.
+- Read-tier IAM policy is outside `pass-automation`.
