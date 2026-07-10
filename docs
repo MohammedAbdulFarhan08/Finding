@@ -1,343 +1,265 @@
-# CORE-1745 — Create / Manage DB Users for IAM Authentication
+# CORE-1592 — CloudFront CDN Setup: End-to-End Context & Implementation Notes
 
-**Repo:** `pass-automation`
-**Status:** In Development
-**Assignee:** Afaaq Zarger · **Reporter:** Carson Desotel
-**Related merged work:** CORE-1720 (`pass-automation` PR #102 — `aws-access-tools` db connection scripts)
+Context handoff for an AI coding agent. Self-contained — includes the full investigation
+history, decisions, technical design, file layout, and gotchas, so the work can continue
+without prior conversation history. Scope is strictly CORE-1592.
 
-This document is a complete implementation brief. Everything needed to execute the
-ticket is below; no external chat context is required.
+> Quotes below are paraphrased from internal team chats and a call, for context only.
 
 ---
 
-## 1. Problem statement
+## 1. Ticket
 
-Today every engineer connects to the Aurora PostgreSQL clusters as a shared,
-high-privilege account (the master `dbadmin`, or per-DB service accounts like
-`dbcommunity`). That means: no least privilege (everyone can write/DDL), no
-individual attribution (`SELECT current_user` returns the same shared user for
-everyone), and a shared static password that has to be circulated.
+**CORE-1592 — "CloudFront CDN Setup (INT)"**
+Stand up a CloudFront CDN in front of the OnePass public-content S3 bucket in the new
+federated AWS **dev** account, as part of the migration from the legacy **Rally** AWS
+account to the new federated accounts.
 
-In the old Rally cluster there was at least `app_ro` / `app_rw` role separation.
-The new federated accounts currently have none of that.
-
-## 2. Goal
-
-1. Recreate read-only / read-write role separation, per database.
-2. Move **human** login from shared passwords to **IAM database authentication**
-   (engineers generate a short-lived token via `aws rds generate-db-auth-token`
-   instead of knowing a password).
-
-### Acceptance criteria (from the ticket)
-- [ ] `app_ro` (read-only) and `app_rw` (read-write) roles are created.
-- [ ] A user can generate a token and log in with `aws rds generate-db-auth-token`.
+The ticket originally carried an enterprise note that CDN "isn't allowed" and to go via
+Cloudflare — so an **exception** was needed and was **granted** (confirmed with the
+platform lead, Jeff).
 
 ---
 
-## 3. Decided approach
+## 2. Environment & Repo
 
-Create two **IAM login roles** per cluster — `app_ro` and `app_rw` — both granted
-`rds_iam` so they authenticate by IAM token only (password login is rejected once
-`rds_iam` is granted).
-
-**SSO role → DB role mapping:**
-
-| SSO role / tool access level | DB user  | Privilege            |
-|------------------------------|----------|----------------------|
-| Read SSO role (access `r`)   | `app_ro` | `SELECT` only        |
-| Contributor (access `c`)     | `app_rw` | `SELECT/INSERT/UPDATE/DELETE` |
-| Owner (access `o`)           | master / service accounts (unchanged) | admin / break-glass / migrations |
-
-**Enforcement lives at the PostgreSQL privilege layer, not at IAM.** `app_ro`
-genuinely cannot write regardless of how it is reached. This is acceptable and
-deliberate given the environment realities below.
-
-### Why this shape (key rationale)
-- **Most developers share the Contributor SSO role.** Per-individual DB users
-  would add N×M management overhead with no real attribution, because IAM DB auth
-  maps the *IAM principal* to the DB user — and the shared role is a single
-  principal. So shared `app_ro`/`app_rw` is the correct model here.
-- **Separation that this actually buys:** anyone on the Read role genuinely cannot
-  write, and the shared `dbadmin` password is removed from daily use. Restricting
-  *write* to a small group is a prod-only concern (see §8), not a dev/uat one.
+- Cloud: **AWS**. New federated **dev** account: `064977599863`. Region: **us-east-2**.
+- IaC: **Terraform**, AWS provider `~> 5.0`, in the `platform-infra` repo under a
+  `CloudFront/` root.
+- Origin bucket: **`content-public-one-pass-dev-us-east-2-pass`** — already migrated and
+  populated in the dev account. **Block Public Access is ON** (correct/expected for an
+  OAC-fronted bucket).
 
 ---
 
-## 4. Environment facts (confirmed — do not re-derive)
+## 3. Final Scope — what this ticket IS and ISN'T
 
-| Item | Value |
-|------|-------|
-| Dev account | `064977599863` |
-| UAT account | `922181234939` |
-| Prod account | `603613246258` |
-| Region (resources) | `us-east-2` |
-| SSO region (Identity Center) | `us-east-1` |
-| IAM DB authentication on clusters | **ENABLED** (no cluster modify needed) |
-| Master credentials | Managed in AWS Secrets Manager (`MasterUserSecret`) |
-| dev community cluster id | `pass-community` |
-| dev community **DbClusterResourceId** | `cluster-FBHHOH4XCOCWBALKUIEU3MMCNQ` |
-| dev community **local tunnel port** | `15433` (5432 + dev 10000 + community 1) |
+**IN scope**
+- A CloudFront distribution fronting `content-public-one-pass-dev-us-east-2-pass`, serving
+  static media/image assets as a CDN. Bucket stays **private**; served via CloudFront
+  using **Origin Access Control (OAC)**.
 
-**SSO profiles** (from `aws-access-tools/install.sh`):
-- `pass-dev-owner` → SSO role `Owner_network_restricted`
-- `pass-dev-contributor` → SSO role `Contributor_network_restricted`
-- (No `pass-dev-read` profile exists yet — created in Phase 4.)
-
-**Contributor role policies:** `PowerUserAccess`, `ReadOnlyAccess`, `AmazonQFullAccess`.
-- `PowerUserAccess` allows all actions except `iam:*` / `organizations:*` /
-  `account:*` on `Resource: "*"`. `rds-db:connect` is in the `rds-db` namespace,
-  so **Contributor already has `rds-db:connect` on `*`** → the write path needs
-  **no IAM policy attached**.
-
-**Read SSO role:** `ReadOnlyAccess` only — it lacks **both** `ssm:StartSession`
-(can't open the tunnel) **and** `rds-db:connect` (can't auth). The read tier
-therefore needs a custom policy (Phase 4).
-
-**Connection mechanics** (already built in CORE-1720 — do not rebuild):
-- `aws-access-tools/get-to-rds` opens an SSM port-forward to the cluster (Terminal 1).
-- `aws-access-tools/get-to-psql` connects `psql` to `localhost:<port>`, generating
-  an IAM token for the password (Terminal 2).
-- Local port = `RDS_PORT(5432) + env_offset + db_offset`
-  (env: dev 10000 / uat 20000 / prod 30000; db: admin 0, community 1, eligibility 2,
-  offerings 3, utilization 4).
-- TLS flags in use: `sslmode=require sslrootcert=system gssencmode=disable`
-  (uses OS trust store; the RDS CA bundle download in `install.sh` is now vestigial).
-- The username today is resolved by `db_user()` in
-  `aws-access-tools/configs/common/root.profile` (db name → master/service account).
-
-## 5. Scope boundaries
-
-**In scope:** human read-only / read-write IAM DB auth for the three Aurora clusters
-(`pass-community`, `pass-eligibility`, `pass-offerings`).
-
-**Out of scope (do NOT fold in):**
-- **Debezium / CDC user (CORE-1587):** needs a long-lived password user with
-  `REPLICATION` in Secrets Manager. IAM tokens expire (~15 min) and won't survive a
-  CDC reconnect. Keep entirely separate.
-- **Application services** (`pass-utilization`, etc.): currently password-in-Secrets-
-  Manager. Migrating apps to IAM auth is a separate follow-on (token refresh +
-  connection-rate ceiling considerations).
-- **Tightening Contributor write access** (swapping `PowerUserAccess` for something
-  narrower): security-hardening follow-on, prod-focused.
+**OUT of scope / explicitly ruled out**
+- **Hosting the frontend apps.** They are **containerized SSR React apps on EKS**, pulled
+  from JFrog Artifactory — NOT static-hosted on S3. Cloudflare is their CDN/edge.
+- **Domain → cluster / ALB routing** — that is the ingress workstream (separate tickets).
+- **`member-apple-wallet-one-pass-dev-us-east-2-pass`** — per-member Apple Wallet
+  `.pkpass` passes (personal data). PENDING confirmation on whether it needs a CDN at all;
+  served server-side via the SDK today. If it stays server-side → out of scope. If ever
+  CDN-fronted → needs **signed URLs/cookies** (a different, larger build); do NOT
+  replicate the public config onto it.
+- **`offerings` / `tool-bulk-upload`** buckets — belong to the partner team.
 
 ---
 
-## 6. The three clusters (per-cluster parameters)
+## 4. End-to-End Investigation & Decision Log
 
-| Cluster | Database name | Table-owner service account |
-|---------|---------------|-----------------------------|
-| `pass-community`   | `community`   | `dbcommunity`   |
-| `pass-eligibility` | `eligibility` | `dbeligibility` |
-| `pass-offerings`   | `offerings`   | `dbofferings`   |
+This section explains *how* the scope in Section 3 was reached — so the agent understands
+why the obvious "CloudFront → S3 static site" pattern was rejected and does not re-suggest
+it.
 
-> The table-owner assumption must be confirmed by recon (Phase 2, Step A) before
-> applying. If recon shows a different owner, update the `\set owner` value.
+### 4.1 Cast (who's who) — NOTE: two people named Jeffrey
 
----
+- **Jeff (Jeffrey Mcguffee)** — platform/DevOps lead & architect. Owns the CloudFront
+  exception and overall platform direction.
+- **Jeffrey Wang** — frontend developer on the pass apps team (Congwen's team). Owns the
+  frontend apps; authoritative on how they actually run and use S3.
+- **Congwen (Ma Congwen)** — CloudFront SME on the consumer/frontend side. Went on
+  paternity leave mid-investigation and roped in Jeffrey Wang.
+- **Julie (Julie Weber)** — team lead / senior dev. Authored the infra sheet. Not deep on
+  CloudFront/CDN.
+- **Blessing** — DevOps engineer who migrated the S3 buckets from the Rally account to the
+  new federated accounts.
 
-## 7. Implementation plan (phased)
+### 4.2 How the understanding evolved (chronological)
 
-### Phase 1 — Add the role-creation SQL to the repo
-Add per-cluster SQL under a new directory, e.g. `aws-access-tools/db-roles/`:
-- `db-roles/core-1745-roles.sql` — parameterized template (below), **or**
-- `db-roles/community.sql`, `db-roles/eligibility.sql`, `db-roles/offerings.sql`
-  (same content, different `\set owner` / `\set appdb`).
-Plus a short `db-roles/README.md` documenting the run procedure.
+1. **Starting assumption.** The standard pattern + the infra sheet suggested "CloudFront in
+   front of an S3 static website" for the frontends.
 
-The SQL is **additive and reversible** — master/service accounts keep working
-throughout. See §9 for the full script.
+2. **Exception granted.** Jeff confirmed there's an exception to use CloudFront.
 
-### Phase 2 — Prove the dev/community slice end-to-end
-Run on **dev / pass-community only** first. This validates every in-scope
-assumption with reversible changes and **no IAM edits**.
+3. **Conflicting signal — the infra sheet (Julie).** Julie's sheet listed the CloudFront
+   row (owner: Afaaq) as *"Set up CloudFront and coordinate with Optum to ensure proper
+   routing from the domain into the cluster, including provisioning specific routes and
+   IPs,"* with a "Loadbalancer" subtask. This described CloudFront routing traffic INTO the
+   cluster (ALB) — a different, larger scope than S3 static hosting.
 
-**Step A — Recon (read-only), as `dbcommunity`:**
-```bash
-# Terminal 1
-get-to-rds -d community
-# Terminal 2
-get-to-psql -d community
-```
-```sql
-SELECT current_user, current_database();
-SELECT tableowner, count(*) FROM pg_tables WHERE schemaname='public' GROUP BY tableowner;
-\dn
-```
-Confirm the table owner; adjust `\set owner` if needed. `\q` to exit.
+4. **Jeff's read.** Asked to reconcile, Jeff said the frontends were "staying in S3," and
+   that beyond serving S3 "we wouldn't need CloudFront" — i.e., CloudFront is only for S3,
+   and the cluster-routing piece is NOT CloudFront's job. Unsure of detail; pointed to
+   Congwen. Separately: "they need to move them over, but I'm unsure of the structure."
 
-**Step B — Create roles, as the MASTER user:**
-```bash
-# Get master creds (Contributor can read this secret)
-SECRET_ARN=$(aws rds describe-db-clusters --db-cluster-identifier pass-community \
-  --query 'DBClusters[0].MasterUserSecret.SecretArn' --output text \
-  --region us-east-2 --profile pass-dev-contributor)
+5. **Julie deferred.** Asked what she intended by "route into cluster," Julie said she
+   didn't know, it was just her understanding, and to go with whatever Jeff and Congwen say
+   ("I barely understand cloudfront"). → the cluster-routing requirement lost its weight as
+   a hard spec.
 
-aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" \
-  --query SecretString --output text --region us-east-2 --profile pass-dev-contributor
-# -> {"username":"dbadmin","password":"..."}
+6. **Congwen's read.** Congwen leaned "CloudFront fronting our S3, for the new instance,"
+   but was unsure and explicitly asked whether the team was planning to scrap CloudFront and
+   use Cloudflare instead — surfacing the CloudFront-vs-Cloudflare direction question. He
+   then went on leave and brought in Jeffrey Wang.
 
-# Run the script through the existing tunnel (Terminal 1 must still be open)
-psql "host=localhost port=15433 dbname=community user=dbadmin \
-  sslmode=require sslrootcert=system gssencmode=disable" \
-  -f aws-access-tools/db-roles/core-1745-roles.sql
-```
+7. **The key correction — Jeffrey Wang.** Wang (owns the apps) clarified: the frontends are
+   NOT statically hosted. They are React **SSR** apps, built into images published to
+   **Artifactory**, pulled and run as **containers on k8s (EKS)** — same process as any
+   other app. So "CloudFront → S3 static site" does not fit the frontends at all. **This
+   invalidated the original assumption.** Apps he owns: `pass-standalone-commercial`,
+   `pass-standalone-government`, `pass-member-arcade`, `pass-facility-web`.
 
-**Step C — Validate WRITE path (Contributor → `app_rw` IAM token):**
-```bash
-HOST=$(aws rds describe-db-clusters --db-cluster-identifier pass-community \
-  --query 'DBClusters[0].Endpoint' --output text --region us-east-2 --profile pass-dev-contributor)
+8. **Wang's side note — the real CloudFront use.** S3 is used as their CDN so the apps have
+   a place to pull **images/media** from; those files are hand-managed in the Rally-account
+   S3 buckets. → The legitimate CloudFront use is fronting an S3 **media/asset** bucket, not
+   hosting apps.
 
-TOKEN=$(aws rds generate-db-auth-token --hostname "$HOST" --port 5432 \
-  --username app_rw --region us-east-2 --profile pass-dev-contributor)
+9. **Direction resolved with Jeff.** Since the apps are cluster-served and Cloudflare is
+   already their edge/CDN, Jeff agreed CloudFront isn't needed for the app side: *"We
+   shouldn't need it then. Cloudflare is a CDN as well. The bucket scenario is the only
+   thing that makes sense."*
 
-PGPASSWORD="$TOKEN" psql "host=localhost port=15433 dbname=community user=app_rw \
-  sslmode=require sslrootcert=system gssencmode=disable"
-```
-```sql
-SELECT current_user;                                       -- expect app_rw
-CREATE TEMP TABLE _t(x int); INSERT INTO _t VALUES (1);    -- write succeeds
-```
+10. **CloudFront confirmed for the bucket.** Jeff confirmed CloudFront can be used for the S3
+    asset bucket. CloudFront (over Cloudflare) was chosen for this because: OAC keeps the
+    bucket private cleanly; S3→CloudFront egress is free (same-AWS); it's one in-account
+    control plane (Terraform + IAM + logging together); and Cloudflare's "nextgen" setup was
+    still being sorted. The exception covers it.
 
-**Step D — Validate READ path is genuinely read-only (`app_ro`):**
-```bash
-TOKEN=$(aws rds generate-db-auth-token --hostname "$HOST" --port 5432 \
-  --username app_ro --region us-east-2 --profile pass-dev-contributor)
-PGPASSWORD="$TOKEN" psql "host=localhost port=15433 dbname=community user=app_ro \
-  sslmode=require sslrootcert=system gssencmode=disable"
-```
-```sql
-SELECT current_user;            -- expect app_ro
-SELECT 1;                       -- read works
-CREATE TEMP TABLE _t2(x int);   -- expect: ERROR permission denied
-```
-**Slice passes** when write works as `app_rw` and is denied as `app_ro`.
-This already satisfies both acceptance criteria.
+11. **Buckets identified & verified.** Wang named the buckets the apps reference via env
+    vars, then checked the new account: each has a populated **`-dev`** copy (migrated by
+    Blessing) and an **empty** non-`dev` duplicate. The `-dev` ones are exact copies from the
+    old account and hold the content. New-account names (confirmed via console URLs):
+    - `content-public-one-pass-dev-us-east-2-pass`  ← **in scope**
+    - `member-apple-wallet-one-pass-dev-us-east-2-pass`  ← **pending**
+    - `offerings-one-pass-dev-us-east-2-pass`, `tool-bulk-upload-one-pass-dev-us-east-2-pass`
+      ← partner team / out of scope
+    Block Public Access is ON on these (correct for OAC).
 
-### Phase 3 — Tool integration (coordinate with Carson; same repo)
-Make the tool resolve the DB username by **access level**, so a contributor
-connects as `app_rw` and a read user as `app_ro`, while owner keeps the master/
-service accounts. See proposed `db_user()` change in §10.
-- Files: `aws-access-tools/configs/common/root.profile` (db_user), and the callers
-  in `aws-access-tools/get-to-psql` and `aws-access-tools/get-to-rds`.
-- This is Carson's tool — open as a PR for his review.
+12. **Wallet bucket flagged for restriction.** `member-apple-wallet` holds per-member
+    `.pkpass` Apple Wallet passes (personal data), served to the logged-in member
+    server-side via the SDK today. Pending Wang's confirmation on whether it needs a CDN at
+    all — likely out of scope, or needs signed URLs if in.
 
-### Phase 4 — Read tier (depends on an external IAM change)
-- Add a `pass-dev-read` profile block to `aws-access-tools/install.sh` pointing at
-  the Read SSO role, and add an `r` access level to `get-to-psql` / `get-to-rds`.
-- **IAM policy (NOT in this repo):** the Read SSO permission set needs a custom
-  policy granting `ssm:StartSession` (for the tunnel) and `rds-db:connect` scoped
-  to `app_ro`. This lives in the IAM/Terraform repo or Identity Center, not in
-  `pass-automation`. Flag as an external dependency.
-  Example resource ARN (dev community):
-  `arn:aws:rds-db:us-east-2:064977599863:dbuser:cluster-FBHHOH4XCOCWBALKUIEU3MMCNQ/app_ro`
+### 4.3 What each stakeholder confirmed (quick reference)
 
-### Phase 5 — Roll out
-- Apply the SQL to dev `pass-eligibility` and `pass-offerings`
-  (fetch their `DbClusterResourceId` via `describe-db-clusters`).
-- Replicate to UAT (`922181234939`) and Prod (`603613246258`) with their own
-  cluster resource IDs and profiles.
+- **Jeff (Mcguffee):** exception granted; CloudFront only for S3, not cluster routing; apps
+  don't need CloudFront (Cloudflare covers them); CloudFront is fine for the S3 asset bucket.
+- **Jeffrey Wang:** apps are containerized SSR on EKS (not static); S3 used as image/media
+  CDN; named + verified the buckets in the new account; wallet bucket is per-member private
+  data.
+- **Congwen:** leaned S3-fronting; raised CloudFront-vs-Cloudflare; handed off to Wang.
+- **Julie:** authored the sheet but deferred to Jeff/Congwen — the "route into cluster" line
+  is NOT an authoritative requirement.
+- **Blessing:** migrated the S3 buckets to the new account (source of the populated `-dev`
+  buckets).
 
 ---
 
-## 8. Production nuance (note, don't solve now)
-In prod, Contributor probably shouldn't hold write. The clean path later is a
-dedicated read-only permission set mapped to `app_ro`, with write reserved for a
-smaller group. Keep dev/uat as Contributor→`app_rw` for now.
+## 5. Technical Design
+
+- **CloudFront + S3 + OAC** (Origin Access Control), NOT legacy OAI.
+- Bucket stays **private** (BPA ON). OAC signs origin requests (SigV4, `always`). Bucket
+  policy grants `s3:GetObject` to the `cloudfront.amazonaws.com` **service principal**,
+  scoped to this distribution's ARN via the `AWS:SourceArn` condition.
+- Cache: AWS-managed **CachingOptimized** policy (long TTLs; suited to static assets).
+- Viewer cert: **default `*.cloudfront.net` certificate** for now — NO custom domain, ACM,
+  or DNS dependency yet. Keeps the build fully reversible (clean `terraform destroy`) while
+  the long-term direction settles. Custom domain is a later, separate step (needs an ACM
+  cert in **us-east-1** + aliases + DNS via Cloudflare).
+- The bucket is **referenced as a data source, not created** by this config (already
+  migrated with content).
 
 ---
 
-## 9. Role-creation SQL (canonical artifact)
-Save as `aws-access-tools/db-roles/core-1745-roles.sql`. Edit the two `\set`
-values per cluster.
+## 6. Terraform File Structure
 
-```sql
--- CORE-1745 : IAM-auth read-only / read-write database roles
--- Run AS the cluster MASTER user via the SSM tunnel. Idempotent, reversible.
--- Per cluster: community/dbcommunity, eligibility/dbeligibility, offerings/dbofferings
-\set owner   dbcommunity
-\set appdb   community
-\set ON_ERROR_STOP on
-
--- [1] IAM login roles (idempotent)
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_ro') THEN CREATE ROLE app_ro WITH LOGIN; END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='app_rw') THEN CREATE ROLE app_rw WITH LOGIN; END IF;
-END $$;
-
--- [2] Force IAM-token auth (password login rejected)
-GRANT rds_iam TO app_ro;
-GRANT rds_iam TO app_rw;
-
--- [3] DB + schema entry
-GRANT CONNECT ON DATABASE :"appdb" TO app_ro, app_rw;
-GRANT USAGE   ON SCHEMA public      TO app_ro, app_rw;
-
--- [4] Object privileges — run AS the owner (master is rds_superuser, not a true
---     superuser, so it can't grant on tables it doesn't own).
-GRANT :"owner" TO CURRENT_USER;
-SET ROLE :"owner";
-
-GRANT SELECT                         ON ALL TABLES    IN SCHEMA public TO app_ro;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES    IN SCHEMA public TO app_rw;
-GRANT USAGE, SELECT                  ON ALL SEQUENCES IN SCHEMA public TO app_rw;
-
--- Future objects (THE most-missed step — without it, new tables are invisible)
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT                         ON TABLES    TO app_ro;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES    TO app_rw;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT                  ON SEQUENCES TO app_rw;
-
-RESET ROLE;
-
--- [5] Verify
-\du app_ro
-\du app_rw
 ```
-> If `GRANT :"owner" TO CURRENT_USER` fails as master, run step [4] while connected
-> as the owner itself (`get-to-psql -d community`); steps [1]–[2] still need master.
-> If the DB uses schemas beyond `public`, repeat [3]–[4] per schema.
+CloudFront/
+├── main.tf          # data sources, OAC, distribution, bucket policy
+├── providers.tf     # terraform block, aws provider (region = var.aws_region), backend (commented)
+├── variables.tf     # aws_region, environment, bucket_name, comment, price_class, tags
+├── outputs.tf       # distribution_id, distribution_arn, distribution_domain_name
+└── Vars/
+    ├── us-east-2/
+    │   ├── dev.tfvars   # REAL values — content-public bucket, ready to apply
+    │   ├── uat.tfvars   # placeholder (bucket_name TBD, migration pending)
+    │   └── prd.tfvars   # placeholder (bucket_name TBD)
+    └── us-east-1/
+        ├── dev.tfvars   # placeholder — only if a us-east-1 origin exists, or when
+        │                #   adding a custom domain (ACM must live in us-east-1)
+        ├── uat.tfvars   # placeholder
+        └── prd.tfvars   # placeholder
+```
+
+Single root config, driven by per-region/env var-files. Only `Vars/us-east-2/dev.tfvars`
+has real values; the rest are placeholders with `bucket_name` commented out so they can't
+be run half-configured.
+
+**Variables:** `aws_region` (required), `environment` (required), `bucket_name` (required),
+`comment` (default ""), `price_class` (default `PriceClass_100`), `tags` (default {}).
 
 ---
 
-## 10. Proposed `db_user()` change (Phase 3)
-Current `db_user()` resolves db name → master/service account. Change it to take
-the access level so the username follows the tier (`app_ro`/`app_rw` are identical
-across clusters; the *database* still selects host/port).
+## 7. How to Run
 
 ```bash
-# configs/common/root.profile
-# Usage: user=$(db_user "<db_name>" "<access_level>")
-db_user() {
-  local db_name="$1"
-  local access="$2"
-  case "$access" in
-    r) echo "app_ro" ;;                       # read tier
-    c) echo "app_rw" ;;                        # read-write tier
-    o)                                         # owner = admin / break-glass
-      case "$db_name" in
-        admin)        echo "${RDS_USER}" ;;
-        community)    echo "dbcommunity" ;;
-        eligibility)  echo "dbeligibility" ;;
-        offerings)    echo "dbofferings" ;;
-        *)            echo "dbadmin" ;;
-      esac ;;
-    *) echo "dbadmin" ;;
-  esac
-}
+terraform init -backend-config="key=cloudfront/us-east-2/dev/terraform.tfstate"
+terraform plan  -var-file=Vars/us-east-2/dev.tfvars
+terraform apply -var-file=Vars/us-east-2/dev.tfvars
 ```
-Update callers in `get-to-psql` and `get-to-rds` to pass `${access_level}` as the
-second arg: `rds_user="$(db_user "${db_name}" "${access_level}")"`.
+
+Validate: take the `distribution_domain_name` output and request a known object:
+`https://<dxxxx>.cloudfront.net/<key>`. If it serves, OAC + bucket policy are correct.
 
 ---
 
-## 11. Open items to confirm
-- [ ] Table owner per cluster (recon, Phase 2A). Default assumption: `db<name>`.
-- [ ] Whether master can `GRANT <owner> TO CURRENT_USER`; else use the owner-run fallback.
-- [ ] `DbClusterResourceId` for `pass-eligibility` and `pass-offerings` (dev), and all three for UAT/Prod.
-- [ ] Confirm database name == `community`/`eligibility`/`offerings` (via `\l` / `\conninfo`).
-- [ ] Read-tier IAM policy ownership (which repo / Identity Center) — external dependency.
+## 8. Current State
 
-## 12. Coordination
-- Phase 3 (tool) and Phase 4 (read profile) touch Carson's `aws-access-tools` — PR
-  for his review; his Teams note already anticipates the `db_user()` cutover.
-- Read-tier IAM policy is outside `pass-automation`.
+- Terraform files scaffolded (Section 6). Only `us-east-2/dev.tfvars` has real values.
+- **NOT yet applied.** Next action is `terraform plan` against the dev var-file.
+- Pending: Jeffrey Wang's answer on the `member-apple-wallet` bucket (in/out of scope).
+
+---
+
+## 9. Open Items / TODO
+
+- Run `terraform plan` + `apply` for dev/us-east-2; validate via the cloudfront.net URL.
+- BEFORE apply: check for an existing bucket policy on `content-public` (see gotcha below).
+- Resolve `member-apple-wallet` scope with Wang; if in scope, design signed-URL access
+  (separate work).
+- Later: custom domain (ACM cert in us-east-1 + aliases + Cloudflare DNS), if decided.
+- Add a CORS response headers policy IF the apps load assets cross-origin
+  (fetch/XHR/canvas, not plain `<img>`).
+- uat/prd rollout once those buckets exist.
+
+---
+
+## 10. Critical Gotchas / Constraints (read before editing)
+
+- **`aws_s3_bucket_policy` REPLACES the bucket's entire policy.** This bucket was migrated
+  and may already have one. Check first
+  (`aws s3api get-bucket-policy --bucket content-public-one-pass-dev-us-east-2-pass`); if a
+  policy exists, **merge** the OAC statement in rather than overwriting.
+- **CloudFront is a GLOBAL service** — the distribution shows under "Global" in the console.
+  `var.aws_region` does NOT place the distribution; it only sets the region for the S3 origin
+  data-source lookup and the bucket-policy API call, and must match the bucket's region
+  (us-east-2).
+- **ACM certs for CloudFront MUST be in us-east-1**, regardless of origin region. Only
+  relevant when a custom domain is added; the default cert needs no ACM.
+- Use **OAC** (`aws_cloudfront_origin_access_control`), NOT legacy OAI. The distribution
+  origin uses `origin_access_control_id` and omits `s3_origin_config`.
+- When using `cache_policy_id`, do NOT also set legacy `forwarded_values` (mutually
+  exclusive).
+- **State must be isolated per region/env** (separate backend key or workspace). This is one
+  root shared across envs via var-files; don't let dev/uat/prd share state.
+- **Do NOT create the distribution via the AWS console** — causes drift vs Terraform.
+- Verify the console/CLI targets the **new dev account (`064977599863`)**, not Rally.
+
+---
+
+## 11. Adjacent (NOT this ticket, but noted)
+
+- The frontend apps currently reach S3 using **static long-lived AWS access keys** in env
+  vars (`PASS_AWS_ACCESS_KEY_ID` / `PASS_AWS_SECRET_ACCESS_KEY` via the `@aws-sdk`
+  `S3Client`). Security smell; ideally moves to IAM roles / Pod Identity as part of the
+  broader migration. Out of scope for CORE-1592 but worth tracking.
+- If CloudFront is adopted for these assets, the apps must emit **CloudFront URLs** for them
+  — an app-side change (frontend team), coordinated as a cutover. The distribution build
+  itself is independent of that.
