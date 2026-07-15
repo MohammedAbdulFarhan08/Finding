@@ -1,5 +1,98 @@
-That's the full plan, written to stand on its own. A few notes for handing it to the agent in pass-automation:
-The doc front-loads everything the agent would otherwise waste time re-deriving — the IAM DB auth flag is already on, Contributor's PowerUserAccess already covers the write path so no policy is needed, the SSL flags, the master-via-Secrets-Manager method, and the per-cluster owner/database parameters. It also draws hard scope lines around Debezium and the app services so the agent doesn't pull them in.
-Two things I'd flag when you drop it in:
-The agent will be tempted to treat Phase 3 (the db_user() change) as part of the immediate work — keep it gated behind the dev/community slice passing, since that's Carson's tool and the proposed diff needs his review. And the read-tier IAM policy in Phase 4 isn't a pass-automation change at all; it lives in your IAM/Terraform repo or Identity Center, so the agent should treat it as an external dependency rather than try to author it in this repo.
-One suggestion: commit the plan itself into the repo (e.g. aws-access-tools/db-roles/README.md or docs/CORE-1745-plan.md) alongside the SQL, so the agent and any reviewer share the same source of truth.
+# ---------------------------------------------------------------------------
+# pass-edge IAM role  (Amazon Location Service — Places)
+#
+# Grants pass-edge geocoding access to Amazon Location Service via EKS Pod
+# Identity. Scope is intentionally minimal: geo-places:Geocode and
+# geo-places:ReverseGeocode on the AWS-managed default Places provider in
+# us-east-2. No Maps, no Routes (confirmed with Jeff).
+#
+# DEFERRED — do NOT switch the pass-edge deployment to pass-edge-sa until both
+# of these are in place, or pass-edge loses its current Secrets Manager access:
+#   1. Secrets Manager scope. A service account maps to exactly ONE IAM role
+#      under Pod Identity, so this role must also carry the secrets access
+#      pass-edge has today (via pass-secrets-sa). Add the secretsmanager +
+#      kms:Decrypt statements to the permissions policy below once the secret
+#      ARNs are confirmed.
+#   2. Pod Identity Association. Commented stub at the bottom — fill in the
+#      cluster name and the confirmed namespace, then uncomment.
+# ---------------------------------------------------------------------------
+
+# --- Trust policy: EKS Pod Identity ---------------------------------------
+data "aws_iam_policy_document" "pass_edge_trust" {
+  statement {
+    sid     = "EksPodIdentity"
+    effect  = "Allow"
+    actions = ["sts:AssumeRole", "sts:TagSession"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
+    }
+  }
+}
+
+# --- Permissions policy: Location Service (Places) ------------------------
+data "aws_iam_policy_document" "pass_edge_permissions" {
+  statement {
+    sid    = "LocationPlacesGeocode"
+    effect = "Allow"
+    actions = [
+      "geo-places:Geocode",
+      "geo-places:ReverseGeocode",
+    ]
+    # AWS-managed default provider — account-agnostic, identical across
+    # dev/uat/prd (note the empty account-id segment).
+    resources = ["arn:aws:geo-places:us-east-2::provider/default"]
+  }
+
+  # DEFERRED — secrets access folds in here (one SA = one role):
+  # statement {
+  #   sid     = "SecretsManagerRead"
+  #   effect  = "Allow"
+  #   actions = ["secretsmanager:GetSecretValue"]
+  #   resources = [
+  #     # "arn:aws:secretsmanager:us-east-2:<account>:secret:onepass-eks/pass-edge-*",
+  #   ]
+  # }
+  # statement {
+  #   sid     = "KmsDecryptForSecrets"
+  #   effect  = "Allow"
+  #   actions = ["kms:Decrypt"]
+  #   resources = [
+  #     # "arn:aws:kms:us-east-2:<account>:key/<secrets-cmk-id>",
+  #   ]
+  # }
+}
+
+# --- Role + policy --------------------------------------------------------
+resource "aws_iam_role" "pass_edge" {
+  name               = "pass-edge-role"
+  assume_role_policy = data.aws_iam_policy_document.pass_edge_trust.json
+
+  tags = {
+    Service   = "pass-edge"
+    ManagedBy = "terraform"
+  }
+}
+
+resource "aws_iam_policy" "pass_edge_permissions" {
+  name   = "pass-edge-permissions"
+  policy = data.aws_iam_policy_document.pass_edge_permissions.json
+}
+
+resource "aws_iam_role_policy_attachment" "pass_edge_permissions" {
+  role       = aws_iam_role.pass_edge.name
+  policy_arn = aws_iam_policy.pass_edge_permissions.arn
+}
+
+# --- Pod Identity Association (DEFERRED — needs confirmed namespace) -------
+# resource "aws_eks_pod_identity_association" "pass_edge" {
+#   cluster_name    = "<eks-cluster-name>"
+#   namespace       = "pass"            # confirm with Jeff before enabling
+#   service_account = "pass-edge-sa"
+#   role_arn        = aws_iam_role.pass_edge.arn
+# }
+
+output "pass_edge_role_arn" {
+  value = aws_iam_role.pass_edge.arn
+}
