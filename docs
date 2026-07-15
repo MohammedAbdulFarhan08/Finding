@@ -1,9 +1,59 @@
-Hey Jeff — need your steer on the last open item for CORE-1592 before I apply anything. The CloudFront CDN over the content bucket is built, serving, and correctly encrypted. The one finding left is the TLS floor being too old (TLSv1) on the distribution.
+# pass-edge → Amazon Location Service (Places): build summary
 
-To raise it to the modern policy (TLSv1.2_2021, which also gives TLS 1.3), the distribution needs a custom domain + custom cert — the default cloudfront.net cert is locked to TLSv1. I've confirmed our Route53 zone (dev.one-pass-dev.com) is real and delegated, so DNS isn't the blocker. But I noticed pass-utilization in that same zone is set up with Cloudflare + ACME-issued certs — which makes me think self-minting an ACM cert on CloudFront isn't how we do it here.
+## The constraint (answers "can I bind 2 roles to one SA?")
+**No.** Under EKS Pod Identity a service account maps to *exactly one* IAM role in
+the cluster account — to change it you edit the association, you don't add a second.
+So `pass-edge-sa` can't hold the shared global secrets role **and** a separate geo
+role at the same time. (The only "two role" case is cross-account role chaining —
+source + target role — which isn't our situation; Location and the cluster are same-account.)
 
-So two calls I think are yours:
-• Certs — do we issue via the Cloudflare/ACME path like pass-utilization, or is a direct ACM cert on CloudFront fine for this?
-• Approach — should this asset domain sit behind Cloudflare (so it owns the domain + TLS, nothing for me to mint), or stay a standalone CloudFront custom domain? Or, since it's a dev bucket of public images, do we just risk-accept the TLS finding for now and sort the domain/cert properly later?
+## Design decision
+`pass-edge-sa` is currently bound to the shared global secrets role. Two ways to add
+geo, one good:
 
-Not blocked on the CDN itself — just don't want to stand up a cert/domain in a way that cuts against how we already do edge here. Happy to grab 15 min if easier.
+- ❌ **Add geo to the global role** → every app on that role gets Location access.
+  Over-permissioned, breaks least privilege.
+- ✅ **Dedicated role for pass-edge** = (pass-edge's secrets, scoped) + (the two geo
+  actions), then **repoint `pass-edge-sa`** from the global role to this dedicated role.
+
+> Alternative if we're forced to keep a single global role: gate the geo statement with
+> ABAC on the pod-identity session tag for `pass-edge-sa`. Works, but bloats the shared
+> role with per-app conditions — not recommended.
+
+## What to build
+- [x] `pass-edge-role` with the Pod Identity trust policy (`pods.eks.amazonaws.com`,
+      `sts:AssumeRole` + `sts:TagSession`) — in `pass-edge-iam-role.tf`.
+- [x] Permissions policy: `geo-places:Geocode` + `geo-places:ReverseGeocode` on
+      `arn:aws:geo-places:us-east-2::provider/default`.
+- [ ] **Secrets scope (deferred):** add `secretsmanager:GetSecretValue` + `kms:Decrypt`,
+      scoped to pass-edge's secret ARN(s) and the secrets CMK. Stubs are in the .tf file.
+- [ ] **Repoint the association:** change `pass-edge-sa`'s `role_arn` from the global
+      secrets role → `pass-edge-role` (the entry in your dev.tfvars pod-identity map).
+      This is an *edit* of an existing association, not a fresh create.
+
+## Open items / dependencies
+- **Namespace** — Jeff guessed "pass"; confirm the real namespace before repointing the
+  association. It has to match exactly or it silently won't attach.
+- **Secret ARNs + CMK** — needed to scope the secrets half of the dedicated role. Pull
+  from pass-edge's SecretProviderClass.
+- **Sequencing (config-before-code):** the dedicated role must carry the secrets access
+  **and** the association must be repointed *before* Jeff flips `serviceAccountName` to
+  `pass-edge-sa`. Otherwise pass-edge boots under a role with no secrets access.
+- **Egress (Jeff's lane):** the pod still has to reach `places.geo.us-east-2.amazonaws.com`
+  — either a firewall allowlist entry through Aviatrix or a Location Service VPC endpoint
+  (PrivateLink, supported since early 2025). Correct IAM ≠ reachable endpoint.
+- **App side (Jeff, confirmed):** pass-edge code already uses the default credential chain
+  / pod identity — no rebuild. Just drop the local API-key/referer workaround and make sure
+  the SDK region is us-east-2.
+
+## Ownership
+- **You (DevOps):** dedicated role + permissions policy + association repoint (Terraform).
+- **Jeff:** deployment SA switch; firewall allowlist / VPC endpoint for egress.
+
+## Validate
+- `terraform plan` / `apply` in dev.
+- `aws iam get-role --role-name pass-edge-role` and
+  `aws iam list-attached-role-policies --role-name pass-edge-role` to confirm the role/policy.
+- After repoint + deploy: `aws eks list-pod-identity-associations --cluster-name <cluster>`
+  should show `pass-edge-sa → pass-edge-role`; then a Geocode call from the pod (once egress
+  is open) is the end-to-end check.
