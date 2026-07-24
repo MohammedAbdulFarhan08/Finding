@@ -1,59 +1,249 @@
-# pass-edge → Amazon Location Service (Places): build summary
+# cert-manager — Apply & Verify (pass-offerings internal TLS)
 
-## The constraint (answers "can I bind 2 roles to one SA?")
-**No.** Under EKS Pod Identity a service account maps to *exactly one* IAM role in
-the cluster account — to change it you edit the association, you don't add a second.
-So `pass-edge-sa` can't hold the shared global secrets role **and** a separate geo
-role at the same time. (The only "two role" case is cross-account role chaining —
-source + target role — which isn't our situation; Location and the cluster are same-account.)
+> **State when this doc starts:** cert-manager is installed via Helm and healthy in the `cert-manager` namespace (controller, webhook, cainjector all `1/1 Running`). All six CRDs are present. No Issuer or Certificate resources exist yet.
+>
+> **Goal of this phase:** create the issuing chain and mint the `pass-offerings` service certificate. This phase stops when the TLS secret exists with correct SANs. App-side TLS enablement is Anuroop's team (see §5).
+>
+> **Rules for the agent:**
+> 1. Apply in the numbered order below. Ordering is a hard requirement, not a preference.
+> 2. Do **not** change the CA duration — it's a deliberate decision (5 years).
+> 3. Do **not** touch application Helm charts / deployments. This work ends at producing the secret.
+> 4. Pin versions; never use `latest`. JFrog is the only registry — no public egress.
 
-## Design decision
-`pass-edge-sa` is currently bound to the shared global secrets role. Two ways to add
-geo, one good:
+---
 
-- ❌ **Add geo to the global role** → every app on that role gets Location access.
-  Over-permissioned, breaks least privilege.
-- ✅ **Dedicated role for pass-edge** = (pass-edge's secrets, scoped) + (the two geo
-  actions), then **repoint `pass-edge-sa`** from the global role to this dedicated role.
+## 1. Environment facts
 
-> Alternative if we're forced to keep a single global role: gate the geo statement with
-> ABAC on the pod-identity session tag for `pass-edge-sa`. Works, but bloats the shared
-> role with per-app conditions — not recommended.
+| Item | Value |
+|---|---|
+| Cluster | `onepass-eks`, `us-east-2`, dev account `064977599863` |
+| cert-manager namespace | `cert-manager` |
+| App namespace | `pass` |
+| Target service | `pass-offerings` |
+| Internal FQDN | `pass-offerings.pass.svc.cluster.local` |
+| Current state of call | `pass-admin` → `pass-offerings` over plain HTTP |
+| CA lifetime | 5 years (renew 6 months out) |
+| Leaf lifetime | 90 days (renew 30 days out) |
 
-## What to build
-- [x] `pass-edge-role` with the Pod Identity trust policy (`pods.eks.amazonaws.com`,
-      `sts:AssumeRole` + `sts:TagSession`) — in `pass-edge-iam-role.tf`.
-- [x] Permissions policy: `geo-places:Geocode` + `geo-places:ReverseGeocode` on
-      `arn:aws:geo-places:us-east-2::provider/default`.
-- [ ] **Secrets scope (deferred):** add `secretsmanager:GetSecretValue` + `kms:Decrypt`,
-      scoped to pass-edge's secret ARN(s) and the secrets CMK. Stubs are in the .tf file.
-- [ ] **Repoint the association:** change `pass-edge-sa`'s `role_arn` from the global
-      secrets role → `pass-edge-role` (the entry in your dev.tfvars pod-identity map).
-      This is an *edit* of an existing association, not a fresh create.
+---
 
-## Open items / dependencies
-- **Namespace** — Jeff guessed "pass"; confirm the real namespace before repointing the
-  association. It has to match exactly or it silently won't attach.
-- **Secret ARNs + CMK** — needed to scope the secrets half of the dedicated role. Pull
-  from pass-edge's SecretProviderClass.
-- **Sequencing (config-before-code):** the dedicated role must carry the secrets access
-  **and** the association must be repointed *before* Jeff flips `serviceAccountName` to
-  `pass-edge-sa`. Otherwise pass-edge boots under a role with no secrets access.
-- **Egress (Jeff's lane):** the pod still has to reach `places.geo.us-east-2.amazonaws.com`
-  — either a firewall allowlist entry through Aviatrix or a Location Service VPC endpoint
-  (PrivateLink, supported since early 2025). Correct IAM ≠ reachable endpoint.
-- **App side (Jeff, confirmed):** pass-edge code already uses the default credential chain
-  / pod identity — no rebuild. Just drop the local API-key/referer workaround and make sure
-  the SDK region is us-east-2.
+## 2. The four manifests
 
-## Ownership
-- **You (DevOps):** dedicated role + permissions policy + association repoint (Terraform).
-- **Jeff:** deployment SA switch; firewall allowlist / VPC endpoint for egress.
+Place these in `platform/cert-manager-config/`. Contents are below; apply them in order.
 
-## Validate
-- `terraform plan` / `apply` in dev.
-- `aws iam get-role --role-name pass-edge-role` and
-  `aws iam list-attached-role-policies --role-name pass-edge-role` to confirm the role/policy.
-- After repoint + deploy: `aws eks list-pod-identity-associations --cluster-name <cluster>`
-  should show `pass-edge-sa → pass-edge-role`; then a Geocode call from the pod (once egress
-  is open) is the end-to-end check.
+### 2.1 `00-selfsigned-issuer.yaml` — bootstrap only
+
+```yaml
+# Bootstrap issuer. Its ONLY job is to sign the CA certificate below.
+# Signs certs that sign themselves — used exactly once, then never again.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-bootstrap
+spec:
+  selfSigned: {}
+```
+
+### 2.2 `01-ca-certificate.yaml` — the trust root
+
+```yaml
+# Internal trust root for the OnePass cluster. 5-year lifetime.
+# cert-manager generates the keypair, the selfsigned issuer signs it,
+# result lands in secret 'onepass-internal-ca-secret' in the
+# cert-manager namespace.
+#
+# NOTE: a ClusterIssuer of type 'ca' resolves its secret from the
+# namespace cert-manager runs in — so this secret MUST live in
+# 'cert-manager', not in 'pass'.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: onepass-internal-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: onepass-internal-ca
+  secretName: onepass-internal-ca-secret
+  duration: 43800h    # 5 years
+  renewBefore: 4380h  # 6 months
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-bootstrap
+    kind: ClusterIssuer
+    group: cert-manager.io
+```
+
+### 2.3 `02-ca-issuer.yaml` — signs all service certs
+
+```yaml
+# The issuer that signs actual service certificates. Cluster-scoped so
+# any namespace can request from it. References the CA secret from 01.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: onepass-ca-issuer
+spec:
+  ca:
+    secretName: onepass-internal-ca-secret
+```
+
+### 2.4 `03-pass-offerings-cert.yaml` — the service cert
+
+```yaml
+# Service certificate for pass-offerings. Produces secret
+# 'pass-offerings-tls' (type kubernetes.io/tls) in the 'pass' namespace,
+# containing tls.crt, tls.key, ca.crt.
+#
+# All four SAN forms included: Kubernetes DNS resolves any of them and
+# TLS verification fails if the client hostname isn't on the cert.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: pass-offerings-tls
+  namespace: pass
+spec:
+  secretName: pass-offerings-tls
+  duration: 2160h    # 90 days
+  renewBefore: 720h  # 30 days
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  dnsNames:
+    - pass-offerings
+    - pass-offerings.pass
+    - pass-offerings.pass.svc
+    - pass-offerings.pass.svc.cluster.local
+  issuerRef:
+    name: onepass-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+```
+
+**JVM option:** if `pass-offerings` is Spring Boot / Java, add the block below to the spec so cert-manager emits a PKCS12 keystore directly (saves the app team converting PEM). Create the password secret first:
+
+```bash
+kubectl create secret generic pass-offerings-keystore-password \
+  -n pass --from-literal=password='<choose-a-password>'
+```
+
+```yaml
+  keystores:
+    pkcs12:
+      create: true
+      passwordSecretRef:
+        name: pass-offerings-keystore-password
+        key: password
+```
+
+`<<CONFIRM stack with Anuroop before deciding on this block>>`
+
+---
+
+## 3. Apply order
+
+```bash
+kubectl apply -f 00-selfsigned-issuer.yaml
+kubectl apply -f 01-ca-certificate.yaml
+kubectl apply -f 02-ca-issuer.yaml
+kubectl apply -f 03-pass-offerings-cert.yaml
+```
+
+**Why order matters:** 02 references the secret that 01 produces; 03 is signed by 02. Applying out of order leaves resources stuck in `READY=False` until the dependency catches up.
+
+---
+
+## 4. Verification
+
+```bash
+# CA root minted
+kubectl get certificate -n cert-manager onepass-internal-ca
+# expect READY=True
+
+# both issuers ready
+kubectl get clusterissuer
+# selfsigned-bootstrap and onepass-ca-issuer both READY=True
+
+# service cert issued
+kubectl get certificate -n pass pass-offerings-tls
+# expect READY=True
+
+# the TLS secret exists
+kubectl get secret -n pass pass-offerings-tls
+# type: kubernetes.io/tls
+
+# confirm SANs are correct (the important check)
+kubectl get secret pass-offerings-tls -n pass \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d \
+  | openssl x509 -noout -text | grep -A1 "Subject Alternative Name"
+# must list all four pass-offerings names
+```
+
+**If `pass-offerings-tls` is stuck at `READY=False`:**
+
+```bash
+kubectl describe certificate pass-offerings-tls -n pass
+# read the Events — almost always the CA issuer wasn't ready yet.
+# Confirm onepass-internal-ca (§4 first command) is READY=True, then
+# cert-manager will retry automatically.
+```
+
+**This phase is DONE when** the SAN check lists all four names. The secret now exists and is correct.
+
+---
+
+## 5. NOT this phase — application team (Anuroop)
+
+Do not implement. Listed so the boundary is clear.
+
+**pass-offerings (server):** mount `pass-offerings-tls` secret, serve TLS on `8443`, add the container/Service port, switch health probes to `scheme: HTTPS` (else crashloop).
+
+**pass-admin (client):** trust the CA (bundle delivered via trust-manager, §6), change URL to `https://pass-offerings.pass.svc.cluster.local:8443`.
+
+cert-manager produces a secret. It does **not** make anything speak HTTPS. A cert on disk is inert until the app loads it.
+
+---
+
+## 6. Next phase — trust-manager (CA bundle distribution)
+
+pass-admin needs to trust the CA that signed pass-offerings' cert. trust-manager publishes the CA bundle as a ConfigMap into the `pass` namespace so pods can mount it, instead of hand-copying the CA everywhere.
+
+Steps (separate work item):
+- Install trust-manager via Helm (image + chart from JFrog, pinned version).
+- Create a `Bundle` resource sourcing `ca.crt` from `onepass-internal-ca-secret`, targeting a ConfigMap in `pass`.
+- Verify: `kubectl get configmap -n pass onepass-internal-ca-bundle`
+
+`<<CONFIRM trust-manager version in JFrog supports a 'secret' source type>>`
+
+---
+
+## 7. Renewal — must be handled before it bites (~60 days out)
+
+cert-manager renews automatically and **rewrites the secret**. Running pods do **not** pick this up — servers read the keystore once at startup. A renewed cert changes nothing until the pod restarts.
+
+Pick one and document it:
+1. Deploy **Reloader**, annotate the Deployment to restart on secret change.
+2. Accept scheduled restarts aligned to cert lifetime.
+3. App-level file watching (app team).
+
+This fails silently — no error, the old cert just expires one day.
+
+---
+
+## 8. GitOps note
+
+Once validated by hand in dev, these manifests belong in `platform-apps` as an ArgoCD Application (`platform/cert-manager-config/`), synced **after** the cert-manager install Application. Dev uses `selfHeal: false`. Config merges to `platform-apps` before any dependent app change.
+
+---
+
+## 9. Open items
+
+- [ ] Apply the four manifests, confirm SAN check passes
+- [ ] Confirm pass-offerings stack (JVM → keystore block)
+- [ ] trust-manager install + Bundle
+- [ ] Renewal/restart strategy chosen
+- [ ] Move manifests into platform-apps as an ArgoCD app
+- [ ] Hand app-side checklist (§5) to Anuroop
+- [ ] Dev only — UAT/Prd is a later phase
