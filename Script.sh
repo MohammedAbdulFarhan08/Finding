@@ -1,240 +1,149 @@
-# EKS CloudWatch Observability — Context & Work Plan
+# Cline Task: Debug SSH ProxyJump failure — VPN jump host can't reach private bastion
 
-**Purpose:** Grounding document for the VS Code / Copilot agent (and for teammates). It captures the problem, the goal, everything decided and discovered so far, the exact identifiers to use, and the constraints that must not be violated. Treat everything here as authoritative context. **Do not invent variable names, ARNs, resource names, or file paths that are not in this document — if something is marked `CONFIRM` or `TODO`, ask for it instead of guessing.**
+## Goal
+Get Ansible able to reach a private EC2 instance ("bastion") through a public EC2 instance ("VPN box") as an SSH jump host, so I can run `ansible-playbook bastion.yml` for training ticket SCSEC-7960. Everything runs **locally from my Mac** against AWS account `shc-dev-build-l`.
 
-_Last updated: 2026-07-31 · Owner: Afaaq Zarger (Platform/DevOps, OnePass)_
+## Environment
+- Machine: SAP MacBook Pro, arm64, macOS 26.2 "Tahoe", zsh.
+- Working dir: `~/training/ansible-bastion`
+- Python: Ansible runs from a uv venv at `~/.venvs/ansible` (Python 3.12), `ansible-core 2.21.4`, `boto3 1.43.103` importable. Activate with `source ~/.venvs/ansible/bin/activate`.
+- AWS: profile `shc-dev-build-l`, account `753386176131`, role `AWS-AutomationEngineering`, region `us-east-2`. Auth via `saml2aws login -a shc-dev-build-l --mfa-token=<TOTP>` then `export AWS_PROFILE=shc-dev-build-l`. `aws sts get-caller-identity` confirmed working and returns `753386176131`.
+- SSH key: `~/.ssh/id_ed25519`, fingerprint `SHA256:aJZLWCdJGbKUe2Ru/tm8cICTjfoIBr6lhRiMzE2qA4`.
 
----
+## The two instances (Terraform "rework" stack, `~/training/terraform/rework`)
+- **VPN box (public jump host):** instance ID `i-039020ae0cf081a8f`, current public IP `3.19.59.179`, private IP `10.10.1.x`, hostname `ip-10-10-1-173`, type t3.small, AZ us-east-2b, AMI is a Golden-SCS Ubuntu 20.04 OpenVPN image. **SSH login user is `ec2-user`** (NOT `ubuntu` — confirmed by testing).
+- **Private box (the bastion, target):** instance ID `i-01640cbe938390708`, private IP `10.10.2.217`, no public IP, stock RHEL 9, SSH login user `ec2-user`.
+- VPC ID: `vpc-0224246255ffa7f6`, VPC CIDR `10.10.0.0/16`.
+- Security groups:
+  - VPN box SG: `sg-00abe7e84eceb8f00` (name `vpn-sg-c5425849`). Inbound: SSH tcp/22 from `208.127.240.18/32`, OpenVPN udp/1194 from `208.127.240.18/32`.
+  - Private box SG: `sg-014da667cd62ccec5` (name references private).
+- My laptop public IP (admin_cidr): `208.127.240.18`.
 
-## 1. TL;DR — where things actually stand
-
-- The `amazon-cloudwatch-observability` EKS add-on is **already installed and Active** on the dev cluster (**v6.4.0-eksbuild.1**), believed to be Terraform-managed (Jeff likely added the add-on block).
-- **The gap:** the add-on shows **EKS Pod Identity = Not set** and **IRSA = Not set** in the console (dev, observed 2026-07-30). It has **no IAM identity**, so the CloudWatch agent + Fluent Bit pods are running but **silently failing to publish** logs/metrics (this is the classic "pods start fine, publish nothing" symptom).
-- **The remaining work is IAM wiring, not add-on install:** create one IAM role, attach it to the add-on's service account via **EKS Pod Identity**, and make sure the resulting log groups are subscribed to Splunk. Then replicate to UAT and Prd.
-- The CloudWatch → Splunk pipeline is **NOT ours to build** — Launchpad Centralized Logging owns it. But the add-on's log groups (`/aws/containerinsights/*`) are **not auto-subscribed**, so they need an explicit subscribe tag (see §7).
-
----
-
-## 2. The problem
-
-The EKS observability add-on is deployed but has no credentials. As a result:
-
-- CloudWatch agent (metrics / Container Insights) and Fluent Bit (container logs) have no IAM permissions to call `logs:*` / CloudWatch APIs.
-- No data reaches CloudWatch → therefore nothing reaches Splunk.
-- This must be fixed and made consistent across **all three environments** (dev, UAT, prd), fully Terraform-managed to avoid the drift we already flagged from console-created resources.
-
-## 3. The goal (definition of done)
-
-EKS application/pod logs (plus Container Insights metrics and Application Signals) flow from `onepass-eks` into CloudWatch, and from CloudWatch into **Splunk via Launchpad Centralized Logging**, in **dev → UAT → prd**, with **all resources managed in Terraform** (no console-created drift). "Done" = logs verified **in the correct Splunk index**, not just visible in CloudWatch.
-
----
-
-## 4. Environment & fixed identifiers (use these verbatim)
-
-| Item | Value |
-|---|---|
-| Platform | Optum OnePass (UHG/Optum), AWS account migration to federated accounts |
-| EKS cluster name | `onepass-eks` |
-| Region | `us-east-2` (Ohio) |
-| Dev account | `064977599863` (`onepass_federated_aws_dev`) |
-| UAT account | `922181234939` |
-| Prd account | `603613246298` |
-| Add-on name | `amazon-cloudwatch-observability` |
-| Add-on version (dev, installed) | `v6.4.0-eksbuild.1` (Active) |
-| EKS Pod Identity Agent | `v1.3.10-eksbuild.3` (Active — Pod Identity infra is ready) |
-| VPC CNI (context) | `v1.21.1-eksbuild.7` (Active) |
-| Add-on namespace | `amazon-cloudwatch` |
-| Add-on service account | `cloudwatch-agent` |
-| Pod Identity trust principal | `pods.eks.amazonaws.com` |
-| Required managed policies | `arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy` + `arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess` |
-| Log groups created by add-on | `/aws/containerinsights/onepass-eks/{application,host,dataplane,performance}` |
-| EKS module tfvars path (dev) | `platform-infra/platform/eks/vars/dev.tfvars` (UAT/prd equivalents alongside) |
-| Terraform state | isolated per environment via `-backend-config` key at `init` |
-| tfvars convention | `Vars/us-east-2/<env>.tfvars` pattern used elsewhere; the EKS module uses the `platform/eks/vars/<env>.tfvars` path above |
-
----
-
-## 5. Hard constraints the agent MUST respect
-
-- **Identity = EKS Pod Identity, NOT IRSA.** The add-on supports Pod Identity (add-on v3.1.0+), the Pod Identity Agent is already Active, and Pod Identity is the OnePass standard. Do not generate IRSA / OIDC trust policies.
-- **Pod Identity trust is a service principal (`pods.eks.amazonaws.com`), not a federated OIDC principal.** The internal `tf-module-iam` module's lack of Federated-principal support therefore does **not** block this role.
-- **No NAT Gateway.** All egress is via Aviatrix SNI firewall or VPC interface endpoints (PrivateLink). The agent/Fluent Bit reach CloudWatch via the `logs` (and CloudWatch metrics) interface endpoints — `CONFIRM` these endpoints exist in `us-east-2` before assuming reachability.
-- **JFrog is the only registry** (`centraluhg.jfrog.io`); no public image egress. (The add-on pulls its images through the managed add-on mechanism — relevant only if we ever switch to the Helm chart.)
-- **No console-created resources.** Everything Terraform. Console screenshot is for *observation only*.
-- **Per-environment tfvars.** Hardcode values that don't vary across environments; parameterize only what does (account IDs, ARNs).
-- **One service account → one IAM role** (Pod Identity is 1:1). Combine both managed policies onto the single `cloudwatch-agent` role; do not create two associations.
-
----
-
-## 6. Decisions already made (with rationale)
-
-- **Terraform from the start** — Afaaq flagged drift risk; **Carson** ("if it's going to TF anyway, start there") and **Jeff** both agreed. No console-first, no later import.
-- **Jeff (platform/DevOps lead)** confirmed EKS add-ons are TF-supported and pointed to the format in `platform-infra/platform/eks/vars/dev.tfvars`. Format he gave:
-  ```hcl
-  amazon-cloudwatch-observability = {
-    configuration_values = "{\"containerLogs\":{\"enabled\":true}}"
-  }
-  ```
-  (He said "something like that maybe" — treat as the shape, not final wording.)
-- **IAM scope:** `CloudWatchAgentServerPolicy` (covers all log/metric puts) **+** `AWSXrayWriteOnlyAccess`. The add-on enables **Container Insights AND Application Signals by default**; App Signals traces require the X-Ray write policy.
-- **OTel Container Insights — evaluated and DEFERRED (ship classic):**
-  - OTel logs write to the **same** `/aws/containerinsights/*` groups and need the **same** `CloudWatchAgentServerPolicy` → **no benefit** for the logs→Splunk path.
-  - OTel log collection is currently **application-logs-only** (host/dataplane "future release").
-  - OTel **metrics** are **public preview** (launched 2026-04-02); the preview region list (N. Virginia, Oregon, Sydney, Singapore, Ireland) **did not include us-east-2** — verify current GA/region status before betting on it.
-  - The add-on can publish **both** OTel and classic metrics simultaneously, so shipping classic now does **not** lock us out. Revisit OTel metrics at GA in us-east-2.
-  - `otelContainerInsights.enabled=true` is **required and off by default** if we ever enable it.
-
----
-
-## 7. Reference docs
-
-- **Internal (Jeff shared) — Launchpad Centralized Logging / CloudWatch:**
-  `https://docs.hcp.uhg.com/public-cloud-account-management/cloudwatch`
-  (Internal HCP page — the agent cannot fetch this; the relevant facts are captured in §8.)
-- **AWS — CloudWatch Observability EKS add-on:**
-  `https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/install-CloudWatch-Observability-EKS-addon.html`
-- **AWS — Container Insights setup (EKS add-on):**
-  `https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Container-Insights-setup-EKS-addon.html`
-- **AWS — OTel Container Insights logs (for the deferred OTel path):**
-  `https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/container-insights-eks-otel-logs.html`
-
----
-
-## 8. Key technical findings (load-bearing facts)
-
-**Launchpad Centralized Logging (from the HCP doc):**
-- Launchpad centralizes CloudWatch logs to Splunk — **we do not build any Firehose / HEC / delivery stream.** (An earlier assumption that we'd build the Firehose→Splunk hop is **ruled out** — do not reintroduce it.)
-- Subscription is controlled by the **`1p-cl-subscribe` tag** on a log group: `True` = centralized, `False` = ignored.
-- Log groups matching these prefixes are **auto-subscribed regardless of tag**: `/lp/cl/*`, `/aws/rds/*`, `/aws/lambda/*`, `/aws/states/*`, `/aws/ec2/*`, `/aws/apigateway/*`, `/aws/guardduty/*`, `API-Gateway-Execution-Logs`, `/aws/eks/*`.
-- **`/aws/containerinsights/*` is NOT in that list.** → The add-on's log groups need an explicit **`1p-cl-subscribe: True`** tag to reach Splunk. **This is the #1 gotcha** — without it, logs land in CloudWatch and never reach Splunk, and you won't notice until you check Splunk.
-- EKS **control plane** logs (`/aws/eks/*`) are auto-enabled by the `1p-cl-default-config-eks` lambda and auto-subscribed — **no action needed** for those.
-
-**AWS add-on behavior (verified against AWS docs):**
-- Installing the add-on installs the **CloudWatch agent** (metrics / Container Insights) and **Fluent Bit** (container logs), and enables **Container Insights + Application Signals by default**.
-- Log groups: `/aws/containerinsights/onepass-eks/{application,host,dataplane,performance}`. Fluent Bit sends pod stdout/stderr to `.../application`.
-- `CloudWatchAgentServerPolicy` includes `logs:CreateLogGroup/CreateLogStream/PutLogEvents/DescribeLogGroups/DescribeLogStreams`.
-- **AL2023 nodes** (likely, given Karpenter): host + dataplane logs **do not vend by default**; **application logs do** — which is the set we care about for Splunk.
-- CloudWatch **default retention is indefinite** → set a retention policy (Splunk is system of record; keep CW retention short, e.g. **7–14 days** as a buffer). `CONFIRM` retention value with team.
-- v6.4.0 (installed) ≥ v6.2.0, so the add-on *supports* OTel metrics — not enabling it (see §6 OTel decision).
-
----
-
-## 9. Work plan (what to build)
-
-> Sequence as independent, buildable chunks. Do dev fully and **verify in Splunk** before touching UAT/prd.
-
-**Chunk 1 — IAM role (per env)**
-- One IAM role for the add-on's `cloudwatch-agent` SA.
-- Trust: EKS Pod Identity (`pods.eks.amazonaws.com`).
-- Attach: `CloudWatchAgentServerPolicy` + `AWSXrayWriteOnlyAccess`.
-
-**Chunk 2 — Pod Identity Association (per env)**
-- Associate SA `cloudwatch-agent` in namespace `amazon-cloudwatch` with the Chunk 1 role.
-- Add this to the **existing PIA map** in the EKS module tfvars. `CONFIRM` the exact variable name/shape of that map (see §11) — **do not invent it.**
-- PIA does not validate SA existence, so ordering vs. the add-on install does not matter.
-
-**Chunk 3 — Add-on block (confirm, don't duplicate)**
-- The add-on appears already added in TF. **Confirm it's committed** and where; do not create a second/duplicate block.
-- Ensure `configuration_values` matches Jeff's format (`{"containerLogs":{"enabled":true}}`) and decide whether App Signals stays on (default) or is scoped out. `CONFIRM`.
-
-**Chunk 4 — Log groups + Splunk subscribe tag (per env)**
-- Pre-create `/aws/containerinsights/onepass-eks/application` (and `/host`, `/dataplane`, `/performance` as needed) in Terraform with:
-  - tag `1p-cl-subscribe = "True"`, and
-  - a retention policy (e.g. 7–14 days, `CONFIRM`).
-- Fluent Bit's `auto_create_group` no-ops if the group already exists, so TF owns the tag + retention cleanly.
-- **Pending confirmation from Carson** on whether Launchpad picks up `/aws/containerinsights/*` on its own or genuinely needs this tag (docs say tag). If Carson says an internal lambda handles it, this chunk may reduce to retention-only.
-
-**Chunk 5 — Validate in dev**
-- Agent pods have creds (no CrashLoopBackOff, no permission errors in `cloudwatch-agent` pod logs).
-- `aws logs describe-log-groups --log-group-name-prefix "/aws/containerinsights/onepass-eks"` shows non-zero `StoredBytes`.
-- Subscribe tag present on the groups.
-- **Logs visible in the correct Splunk index** (`CONFIRM` index name with Carson).
-
-**Chunk 6 — Roll to UAT, then Prd**
-- Replicate Chunks 1–4 in `922181234939` (UAT) and `603613246298` (prd) tfvars. Prd release follows Change Request → manual sync convention.
-
----
-
-## 10. Terraform reference shapes (illustrative — match existing module conventions)
-
-> These are **shapes to guide structure**, not copy-paste truth. The real module already has patterns for IAM roles, Pod Identity associations, and the add-on map — **prefer the existing module's variables and modules over these sketches.** Where a name is `TODO`/`CONFIRM`, get the real one before writing.
-
-```hcl
-# Chunk 1 — IAM role (Pod Identity trust)
-data "aws_iam_policy_document" "cw_agent_trust" {
-  statement {
-    actions = ["sts:AssumeRole", "sts:TagSession"]
-    principals {
-      type        = "Service"
-      identifiers = ["pods.eks.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role" "cw_agent" {
-  name               = "onepass-eks-cloudwatch-agent-role"  # CONFIRM naming convention
-  assume_role_policy = data.aws_iam_policy_document.cw_agent_trust.json
-}
-
-resource "aws_iam_role_policy_attachment" "cw_agent_server" {
-  role       = aws_iam_role.cw_agent.name
-  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
-}
-
-resource "aws_iam_role_policy_attachment" "cw_agent_xray" {
-  role       = aws_iam_role.cw_agent.name
-  policy_arn = "arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess"
-}
-
-# Chunk 2 — Pod Identity Association
-# PREFER adding to the existing PIA map variable in dev.tfvars instead of a raw resource.
-resource "aws_eks_pod_identity_association" "cw_agent" {
-  cluster_name    = "onepass-eks"
-  namespace       = "amazon-cloudwatch"
-  service_account = "cloudwatch-agent"
-  role_arn        = aws_iam_role.cw_agent.arn
-}
-
-# Chunk 4 — Log group with Splunk subscribe tag + retention
-resource "aws_cloudwatch_log_group" "ci_application" {
-  name              = "/aws/containerinsights/onepass-eks/application"
-  retention_in_days = 14        # CONFIRM
-  tags = {
-    "1p-cl-subscribe" = "True"  # required so Launchpad centralizes to Splunk
-  }
-}
-# repeat for /host, /dataplane, /performance as needed
+Terraform outputs from the rework stack:
+```
+instance_ids = { "private" = "i-01640cbe938390708", "vpn" = "i-039020ae0cf081a8f" }
+private_security_group_id = "sg-014da667cd62ccec5"
+vpn_security_group_id     = "sg-00abe7e84eceb8f00"
+subnet_ids = { "private" = "subnet-0e252e6e39502db0c", "public" = "subnet-0bc50953303854350" }
+vpc_id = "vpc-0224246255ffa7f6"
 ```
 
+Note: there is ALSO an older "layer-00/01/02" stack running in the same account with VPC CIDR `10.0.0.0/16`. The rework stack uses `10.10.0.0/16`. Don't confuse the two. We only care about the **rework** stack instances above.
+
+## What already works (do NOT re-test these — confirmed)
+1. AWS auth works: `aws sts get-caller-identity` → `753386176131`, `AWS-AutomationEngineering/c5425849`.
+2. SSH key fingerprint matches the AWS keypair exactly (`keypair-rework-c5425849`), fingerprint `SHA256:aJZLWCdJGbKUe2Ru/tm8cICTjfoIBr6lhRiMzE2qA4`.
+3. **First hop works:** `ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes ec2-user@3.19.59.179 hostname` returns `ip-10-10-1-173`. So the VPN box is reachable and accepts the key as `ec2-user`.
+4. The VPN box's sshd accepts ed25519 (server-sig-algs includes ssh-ed25519). It is NOT a FIPS/key-type problem.
+5. Login user discovery: tested `openvpnas`, `openvpn`, `admin`, `ec2-user`, `root` on the VPN box — only `ec2-user` succeeded.
+
+## Earlier dead-ends already ruled out (don't repeat)
+- Multiple failures were caused by transposed IP digits (`13.59.59.179`, `13.19.59.179`) — the real VPN public IP is `3.19.59.179`. Always pull IPs fresh from AWS, never type them.
+- VPN box was stopped/restarted earlier; it lost its Elastic IP and now has an auto-assigned public IP (`3.19.59.179`) that changes on restart. The rework Terraform was supposed to hold an EIP on it but it's currently detached (Elastic IP column shows `–`).
+- Inventory file was previously named `hosts.yaml` while commands used `hosts.yml` — fixed, now `hosts.yml`.
+
+## THE CURRENT FAILURE (this is what to fix)
+Running the full jump:
+```bash
+ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes \
+  -J ec2-user@3.19.59.179 ec2-user@10.10.2.217 hostname
+```
+First hop into the VPN box succeeds (USG banner shows), then:
+```
+channel 0: open failed: connect failed: Connection timed out
+stdio forwarding failed
+Connection closed by UNKNOWN port 65535
+```
+So: **the VPN box (jump host) cannot open a TCP connection to the private box `10.10.2.217` on port 22.** The second hop times out.
+
+## Most likely root cause (verify, don't assume)
+The private box SG `sg-014da667cd62ccec5` probably does not allow inbound SSH from the VPN box. It should allow tcp/22 from either the VPN SG `sg-00abe7e84eceb8f00` or the VPC CIDR `10.10.0.0/16`. A strong suspect: the rule may reference the OLD stack's CIDR `10.0.0.0/16` (which doesn't match the rework private IP `10.10.2.217`), or reference the wrong SG.
+
+## Diagnostics to run (in order) and what each result means
+
+```bash
+export AWS_PROFILE=shc-dev-build-l
+
+# A) What does the private box SG allow on port 22?
+aws ec2 describe-security-groups --region us-east-2 \
+  --group-ids sg-014da667cd62ccec5 \
+  --query 'SecurityGroups[0].IpPermissions[?FromPort==`22`]' --output json
+
+# B) Confirm both instances share the same VPC + see the private box's SGs
+aws ec2 describe-instances --region us-east-2 \
+  --instance-ids i-01640cbe938390708 i-039020ae0cf081a8f \
+  --query 'Reservations[].Instances[].[InstanceId,VpcId,PrivateIpAddress,PublicIpAddress,State.Name,[SecurityGroups[].GroupId]]' \
+  --output json
+
+# C) Definitive reachability test FROM the VPN box to the private box's port 22
+VPN_IP=$(aws ec2 describe-instances --region us-east-2 --instance-ids i-039020ae0cf081a8f \
+  --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes ec2-user@${VPN_IP} \
+  'timeout 5 bash -c "cat < /dev/null > /dev/tcp/10.10.2.217/22" && echo OPEN || echo BLOCKED'
+```
+
+Interpretation:
+- Test C `BLOCKED` + Test A shows no matching source → **SG problem**, this is the fix.
+- Test C `OPEN` → port is reachable; problem would be key/user on the private box instead (unlikely, it's stock RHEL with the same keypair).
+- Test B shows different `VpcId` between the two instances → they're in different VPCs, jump can't work.
+
+## The fix (if it's the SG, which is expected)
+Add inbound SSH on the private box SG from the VPN SG (preferred — source is the SG, not a CIDR):
+```bash
+aws ec2 authorize-security-group-ingress --region us-east-2 \
+  --group-id sg-014da667cd62ccec5 \
+  --protocol tcp --port 22 --source-group sg-00abe7e84eceb8f00
+```
+If that rule already exists but references the wrong thing, or you prefer CIDR-based, alternatively allow the VPC CIDR:
+```bash
+aws ec2 authorize-security-group-ingress --region us-east-2 \
+  --group-id sg-014da667cd62ccec5 \
+  --protocol tcp --port 22 --cidr 10.10.0.0/16
+```
+NOTE: doing this via CLI creates Terraform drift vs `~/training/terraform/rework`. Preferred long-term fix is to correct the private SG's ingress rule in the rework Terraform (`securitygroups.tf`) to allow tcp/22 from the VPN SG or `10.10.0.0/16`, then `terraform apply`. For now, unblocking via CLI is acceptable for training; note the drift.
+
+## Verify the fix
+```bash
+VPN_IP=$(aws ec2 describe-instances --region us-east-2 --instance-ids i-039020ae0cf081a8f \
+  --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+PRIV_IP=$(aws ec2 describe-instances --region us-east-2 --instance-ids i-01640cbe938390708 \
+  --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
+
+ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes \
+  -J ec2-user@${VPN_IP} ec2-user@${PRIV_IP} hostname     # expect the private box hostname
+
+cd ~/training/ansible-bastion
+ansible-inventory -i inventory/hosts.yml --graph          # expect @bastion -> bastion-private
+ansible bastion -m ping                                    # expect pong
+```
+
+## Current inventory file (`~/training/ansible-bastion/inventory/hosts.yml`)
+IPs must be filled fresh from AWS each session (VPN public IP changes on restart because the EIP is detached). Current values: VPN `3.19.59.179`, PRIVATE `10.10.2.217`. The ProxyCommand uses `ec2-user@` for the jump host and `-o IdentitiesOnly=yes`:
+```yaml
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  children:
+    bastion:
+      hosts:
+        bastion-private:
+          ansible_host: 10.10.2.217
+  vars:
+    ansible_user: ec2-user
+    ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -q -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes ec2-user@3.19.59.179"'
+```
+
+## After connectivity is green — the actual task
+Run the bastion playbook: `cd ~/training/ansible-bastion && ansible-playbook bastion.yml`. Watch for a likely next issue: the `repository-management` role on stock RHEL. It's configured with `repo_cdn_override: cdn2` and `repo_connectivity_check: false` so it shouldn't hard-fail, but if it errors on unreachable repo endpoints, that's expected (the box has no GlobalProtect VPN) and can be worked around.
+
+## Constraints
+- Do NOT rebuild or swap either instance's AMI. The image is not the problem; connectivity is.
+- Do NOT destroy any infra (Patryk's cost directive — stop/terminate only when all tickets done).
+- Keep the golden OpenVPN AMI on the VPN box (needed for ticket 7954).
+- Always pull IPs fresh from AWS; never hand-type them (digit-transposition has burned us repeatedly).
+
 ---
 
-## 11. Pending items / open questions / blockers
-
-**Need from Carson (app dev / Launchpad SME):**
-- Does Launchpad centralize `/aws/containerinsights/*` automatically, or is the `1p-cl-subscribe: True` tag required? (Docs indicate the tag.)
-- Which **Splunk index** should these logs land in (for verification)?
-
-**Need from Afaaq / the repo (feed to the agent before it writes final TF):**
-- The **exact PIA map variable name and shape** in `platform-infra/platform/eks/vars/dev.tfvars`.
-- The current **add-on / addons map** block (to confirm the add-on entry and avoid duplication).
-- The module's **IAM role naming convention** and any shared helper module for roles.
-
-**Decisions to lock:**
-- Retention value for the containerinsights log groups (proposed 7–14 days).
-- App Signals: keep on (default) or scope out.
-- `CONFIRM` the `logs` / CloudWatch metrics **VPC interface endpoints** exist in `us-east-2` (no NAT).
-
-**Deferred (explicitly not blocking this rollout):**
-- OTel Container Insights metrics — revisit at GA in `us-east-2`.
-
----
-
-## 12. Guardrails for the agent (anti-hallucination)
-
-1. Use only the identifiers in §4. Do not fabricate cluster names, account IDs, ARNs, namespaces, or SA names.
-2. Generate **Pod Identity** trust (`pods.eks.amazonaws.com`), never IRSA/OIDC.
-3. Do not add Firehose, Kinesis, HEC, or any CW→Splunk delivery resources — Launchpad owns that hop.
-4. Do not create a duplicate add-on block; the add-on already exists in TF (confirm first).
-5. For the PIA map and IAM naming, **use the real module structure** (§11). If it's not provided, emit a clear `// TODO: confirm existing variable name` marker instead of inventing one.
-6. Keep every resource per-environment and Terraform-managed; never suggest console steps as the solution.
-7. When unsure, surface the question — do not guess.
