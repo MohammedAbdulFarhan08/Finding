@@ -1,82 +1,90 @@
-Good call — Cline can read the actual repo files, so let it do the finding *and* the writing this time, with me setting it up so it doesn't have to ask you the same questions again.
+# Cline Task: SCSEC-7954 Phase 2 — write, run, and verify the OpenVPN configuration AUTONOMOUSLY
 
-Here's a complete task to hand to Cline for **SCSEC-7954**.
+Work end to end without waiting for my input. Make the best call using the decisions below.
+Only stop and ask if you hit something that would be destructive or genuinely ambiguous in
+a way these instructions don't cover (see "When to stop" at the end). Otherwise, proceed
+through all steps and give me a single final report.
 
----
+## Decisions (already made — apply them, don't re-ask)
+1. Base this on the `openvpn-configure-userauth.yml` reference (local user/password + cert
+   auth). Do NOT use domainauth/aad/ldapauth/hardware-mfa (need infra/secrets we don't have)
+   or pipeline-ssm (AMI-build, wrong purpose).
+2. Trim the chain — do NOT include aws-cloudwatch-agent or aws-ssm-agent pre_tasks from the
+   reference. The ticket only requires configuring OpenVPN. Include only:
+   customize_openvpn (userauth) -> openvpn role.
+3. Variable overrides:
+   - openvpn_create_virtualenv: false
+   - manage_iptables_rules: false   (SG handles the perimeter; don't let the role rewrite
+     iptables over a remote SSH session)
+   - clients: ['c5425849']
+   - Leave openvpn_redirect_gateway, openvpn_port, openvpn_proto, openvpn_server_network,
+     and all cipher/TLS settings at role defaults. Full-tunnel default is fine (split-tunnel
+     was a 7960 bonus, not a 7954 requirement).
+4. Apply the 7960 root-PATH fix proactively: the role runs `aws configure set region` as
+   root; root's sudo secure_path may lack the AWS CLI dir. Symlink `aws` into a dir already
+   on root's secure_path before the role runs, same pattern as the 7960 playbook.
 
-# Cline Task: SCSEC-7954 — OpenVPN Configuration
+## Target (pull IPs fresh — EIP is detached, public IP changes on restart)
+- VPN box instance ID: i-039020ae0cf081a8f, AMI Golden-SCS-Ubuntu-20.04-OpenVPN.
+- SSH user: ec2-user (confirmed in 7960; NOT ubuntu). Key: ~/.ssh/id_ed25519.
+- Connect DIRECTLY — this box has a public IP, no jump needed.
+- export AWS_PROFILE=shc-dev-build-l ; region us-east-2 ; account 753386176131.
+- If `aws sts get-caller-identity` fails with expired/no creds, STOP and tell me to run
+  saml2aws (you can't supply my TOTP). That's the one hard external dependency.
+- SG sg-00abe7e84eceb8f00 already allows SSH/22 and UDP/1194. Do NOT open new ports.
 
-## Goal
-Ticket requirement: "Use the Ansible Roles and Playbooks to configure the public VPN instance." This is the last of the training tickets (7952→7958→7957→7956→7955→7960→**7954**). 7960 (bastion) is already done and applied.
+## Step 1 — Fix inventory structure (do first)
+Current ~/training/ansible-bastion/inventory/hosts.yml has the bastion ProxyCommand under
+the global `all: vars:` block, which would wrongly apply to the VPN box (causing a jump
+loop). Restructure so:
+- Jump/ProxyCommand settings apply ONLY to the `bastion` group.
+- Add a `vpn` group with the VPN box, connecting directly (no ProxyCommand), user ec2-user.
+- Pull the current public IP from AWS and use Ansible env-lookup or a written-in value that
+  resolves at runtime (not a dead ${VAR} literal — that bug bit us before).
+Verify with `ansible-inventory --graph` and `ansible vpn -m ping`. If ping fails, diagnose
+in this order before assuming anything else: (a) is the instance running (describe-instances
+State) — start it if stopped; (b) is the public IP current; (c) does SG allow SSH from my
+current public IP `curl -s https://checkip.amazonaws.com` — if my IP changed, add it to the
+SG via authorize-security-group-ingress (note the drift, don't destroy anything). Fix
+whichever it is and retry. Do not swap the AMI or rebuild the instance.
 
-## Do this in two phases. Phase 1 = extract and report back to me before writing anything. Phase 2 = only after I confirm.
+## Step 2 — Read-only recon (document before-state, change nothing)
+Direct SSH as ec2-user:
+  ls -la /etc/openvpn/keys/ 2>&1
+  systemctl status 'openvpn@*' 2>&1
+  sudo iptables -L -n 2>&1 | head -30
+Record the output for the final report. Then proceed — do not wait.
 
-## Environment (same as 7960 — already proven working)
-- Control machine: Mac, ansible runs from `source ~/.venvs/ansible/bin/activate` (Python 3.12, ansible-core 2.21.4, boto3 installed).
-- Project lives at `~/training/ansible-bastion/` — reuse this same project (ansible.cfg, inventory, group_vars) rather than creating a new one, since the target VPN box is in the same VPC/account.
-- AWS: `export AWS_PROFILE=shc-dev-build-l`, region us-east-2, account 753386176131.
-- Terraform state for IPs: `cd ~/training/terraform/rework && terraform output`.
+## Step 3 — Write the playbook
+Create ~/training/ansible-bastion/vpn-configure.yml in the SAME project (reuse ansible.cfg,
+group_vars, roles_path). Target `hosts: vpn`, gather_facts: true, become: true. Use plain
+include_role calls with explicit vars, trimmed chain + overrides above. Put the root-PATH
+symlink fix as an early task. Add group_vars/vpn.yml if cleaner than inlining vars.
 
-## The target instance — the public VPN box
-- Instance ID: `i-039020ae0cf081a8f`
-- AMI: **Golden-SCS-Ubuntu-20.04-OpenVPN** (a golden, pre-hardened image — likely already has OpenVPN installed; this ticket is probably about *configuring* it, not installing from scratch — verify, don't assume)
-- **SSH login user is `ec2-user`** (confirmed during 7960 debugging — NOT `ubuntu`, despite it being an Ubuntu-based AMI)
-- Public IP changes on restart — its Elastic IP is currently detached (known issue, separate from this ticket). Always pull the current public IP fresh:
-  ```bash
-  aws ec2 describe-instances --region us-east-2 --instance-ids i-039020ae0cf081a8f \
-    --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
-  ```
-- Security group `sg-00abe7e84eceb8f00` (`vpn-sg-c5425849`) already allows: SSH tcp/22 from `208.127.240.18/32`, OpenVPN udp/1194 from `208.127.240.18/32`. If configuring OpenVPN needs additional ports open (e.g. tcp/443 for TLS mode, port 943 for an admin UI — check the role/AMI for what it actually uses), flag this to me rather than silently opening ports.
-- No jump/ProxyJump needed for this box — it has a public IP, connect directly.
+## Step 4 — Run
+cd ~/training/ansible-bastion && ansible-playbook vpn-configure.yml
+If a task fails, attempt reasonable self-correction based on the error and the 7960
+precedents (root PATH, missing package -> dnf/apt install it, python interpreter mismatch),
+re-run, and note what you changed. If aws-cloudwatch-agent/aws-ssm-agent get pulled in via
+an unexpected dependency and fail on unreachable S3/repo endpoints, that's expected off-VPN
+— strip them from the chain and re-run rather than treating it as a blocker.
 
-## PHASE 1 — Extraction (do this first, report back, do not write the playbook yet)
+## Step 5 — Verify
+  ansible vpn -b -m command -a "systemctl status 'openvpn@*'"
+  ansible vpn -b -m command -a 'ls -la /etc/openvpn/keys/'
+  ansible vpn -b -m shell -a 'sudo cat /etc/openvpn/openvpn_udp_1194.conf'
+Confirm the client .ovpn was generated (role fetches to /tmp/ansible/<client>/<host>.ovpn on
+this Mac) and report its path.
 
-### Step 1: Check what's already cloned locally
-```bash
-find ~/ansible/shared-roles -maxdepth 1 -iname "*openvpn*" 2>/dev/null
-find ~/main -type d -iname "*openvpn*" 2>/dev/null
-find ~/ansible -maxdepth 2 -iname "*openvpn*" 2>/dev/null
-```
+## When to stop and ask (only these)
+- AWS creds expired (needs my TOTP for saml2aws).
+- The only path forward would destroy/terminate an instance or delete infra.
+- The playbook needs a real secret/credential not derivable from the repo or these notes.
+- Repeated (3+) failures on the same task after reasonable self-correction attempts.
+Otherwise: proceed through all steps and deliver ONE final report — recon before-state,
+what you wrote, the play recap (ok/changed/failed), any self-corrections made, verification
+output, and the .ovpn path.
 
-### Step 2: If not found locally, clone from GitLab
-The `bastion`, `disk-management`, `repository-management` roles used for 7960 live in `scs/shared/ansible/roles` (already cloned at `~/ansible/shared-roles`). The `bastion.yml` reference playbook (author Mark Carey) lives in `scs/security/ansible/playbooks`. The `openvpn` role and an `openvpn.yml` reference playbook are expected to be **siblings of that**, likely in `scs/security/ansible/roles` and `scs/security/ansible/playbooks`.
-
-**Important — do not guess the clone path.** A previous attempt to clone `scs/shared/ansible` (without `/roles` on the end) failed with "project not found" because it was a GitLab *subgroup* (a folder), not a repo — the actual repo was one level deeper (`scs/shared/ansible/roles`). Get the exact clone URL from the GitLab UI's **Code** button for whichever repo actually holds `openvpn.yml` and the `openvpn` role, rather than constructing the path from the pattern above.
-
-```bash
-mkdir -p ~/ansible/security-roles
-git clone <EXACT_URL_FROM_GITLAB_UI> ~/ansible/security-roles
-```
-
-### Step 3: Read and report — quote exact values, say "not found in files" if absent, do not guess or infer beyond what's written
-
-Report on the **`openvpn` role**:
-1. Does it **install** OpenVPN packages, or does it assume OpenVPN is already installed (i.e., does it check for an existing install / skip install tasks on a golden image)? Quote the relevant task names/conditions.
-2. Every variable in `defaults/main.yml` and `vars/main.yml`, with its default value — especially: listening port/protocol, cipher/TLS-auth settings, server subnet/CIDR for VPN clients, whether it does split-tunnelling or routes-all-traffic, CA/PKI cert generation (does it generate certs, or expect existing ones?), client config generation.
-3. What templates it renders and to what paths (e.g. `server.conf`, `client.ovpn`, systemd unit files).
-4. `meta/main.yml` — dependencies on other roles, required collections.
-5. Minimum `gather_facts`/`become` requirements.
-6. Any variable resembling `bastion_hostname`-style naming for this role — anything that needs employee ID / a per-user identifier.
-
-Report on the **`openvpn.yml` reference playbook** (if it exists — check alongside `bastion.yml`):
-7. Full role-chain it calls, in order — same pattern as `bastion.yml`, which chained `repository-management → fips → aws-cloudwatch-agent → iptables → domain-join → bastion → reboot`. We do NOT want `domain-join` (prompts for an AD password we don't have) or other roles unrelated to the ticket — list every role it chains and flag which ones look like they'd need credentials/secrets we don't have.
-8. Any vars_files or vars_from patterns it uses (the `bastion.yml` example used `vars_from: business/sms.yml`).
-
-Also check: does anything in the role or playbook reference **split tunnelling** specifically? 7960's ticket text mentioned "configure OpenVPN for split tunnelling" as a bonus objective — if 7954 and that bonus overlap, note it so we don't do redundant work.
-
-**Stop here and report all of the above back before writing any Ansible code.**
-
-## PHASE 2 — Only after I review Phase 1 findings and confirm
-
-I will come back with instructions once I've seen what's actually in the role. Do not proceed to writing `openvpn.yml`, modifying the inventory, or running anything against the VPN box until then.
-
-## Constraints (same as 7960)
-- Do not install/reinstall OpenVPN from scratch if the golden image already has it working — that would fight the point of using a golden image. Configure, don't reinstall, unless the extraction shows the role/ticket genuinely calls for it.
-- Do not restart or stop the VPN instance.
-- Do not destroy any infrastructure.
-- If opening new security group ports is needed, tell me which ports and why before applying — don't just open them.
-- Reuse `~/training/ansible-bastion/` as the project (ansible.cfg, group_vars, roles_path already point at the right places) rather than creating a parallel structure.
-
----
-
-Send that to Cline, and once it reports back Phase 1, paste the findings here and I'll write the actual `openvpn.yml` playbook grounded in what the role really does — same approach that got 7960 right.
+## Constraints
+- No new SG ports. No instance stop/restart (a service restart via the role is fine). No
+  destroy. Reuse the existing project, don't create a parallel one. Don't swap/rebuild AMIs.
