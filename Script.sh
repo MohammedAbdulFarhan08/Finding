@@ -1,34 +1,23 @@
-I'm verifying a fix for Jira STOI-13938 by booting a KVM golden image in SCI
-OpenStack (region eu-de-1, project DEV_SEC_GOLDEN_IMAGE). My CLI is configured:
-`openstack --os-cloud openstack_ext_dev ...` works.
+Strict rules from here on:
+- Do not delete anything without asking me first: servers, volumes (including
+  error ones), floating IPs, keypairs, security groups or attachments. List
+  what you'd remove and wait for my yes.
+- Apart from the probe and the single server described below, don't create
+  anything.
 
-Goal: boot image "C5425849-Golden-KVM-CDN2-SCS-RHEL-9.6-Base-100923" on flavor
-g_k_c4_m16_v2 (KVM flavor, zero root disk so it must boot from a volume), SSH in
-with key c5425849-kvmtest, and check /proc/cmdline and current_clocksource.
+Probe: yes, run a bounded one. Create one image-backed premium volume from the
+RHEL 9.6 image every ~20 minutes, max 6 attempts, with unique names. Stop at
+the first success. Leave failed volumes in place and list them for me.
 
-The blocker is volume creation. What I've tried, all failed:
-- boot-from-volume via `server create`: volume goes to error, instance aborts.
-- volume type `vmware` (the default), size 100: created then error.
-- volume type `premium`, size 100: error.
-- volume type `standard_hdd`, size 100: rejected, needs 500GB minimum.
-Image virtual_size is 100GB. Quota is fine (4.5TB of 75TB, 24 of 10500 volumes).
-Volume types available: premium, standard_hdd, vmware.
+On first success: keep the volume (delete_on_termination=false) and boot ONE
+server from it in eu-de-1d with flavor g_k_c4_m16_v2, network
+DEV_SEC_GOLDEN_IMAGE_private, key c5425849-kvmtest, and security groups
+images-team-ssh plus c5406745-ssh. Attach floating IP 139.66.27.63.
 
-Please investigate WITHOUT creating lots of resources:
-1. Figure out the correct volume type + size for booting a KVM image here.
-   Look at how existing KVM servers in this project are backed:
-   `openstack --os-cloud openstack_ext_dev server list`, pick a running
-   Golden-KVM-* one, and inspect its attached volume's type/size with
-   `server show` then `volume show`. Copy whatever the working KVM instances use.
-2. Check the premium/standard_hdd error reasons if any detail is available.
-3. Once you know the right type+size, create ONE volume from the image, confirm
-   it reaches `available`, boot the server from it, attach a floating IP
-   (external net: FloatingIP-external-iaas-01 or the shared one — match what
-   existing floating IPs use), and SSH in.
-4. Run: cat /proc/cmdline | grep -o clocksource=kvm-clock
-        cat /sys/devices/system/clocksource/clocksource0/current_clocksource
-5. Clean up after: delete the server, floating IP, and volume.
+Before SSH: read the console log and compare the key fingerprint cloud-init
+installed for cloud-user with my local key
+(ssh-keygen -E md5 -lf ~/.ssh/c5425849-kvmtest.pub). Don't assume a fresh boot
+fixes it. If they differ, stop and tell me.
 
-Use unique names (c5425849-kvmtest-<n>) so nothing collides. Show me the plan and
-the working volume type before you create anything. Don't retry a failing type
-more than once.
+If SSH works, run the two clocksource checks, show me the output, then STOP and
+leave everything running. Don't tear anything down.
