@@ -1,49 +1,36 @@
-APPROVED — proceed. Do these in order.
+INVESTIGATE the repository-management / CDN2 blocker — READ-ONLY. Make NO commits,
+do NOT branch the roles repo, do NOT touch the CDN2 mirror or any sync job. Report
+findings and stop.
 
-1) REBASE FIRST — main moved. Steve just merged his changes into main, and our
-   branch c5425849-sles16 was cut from main. Before any build, rebase the branch
-   onto latest main.
-   - Resolve conflicts carefully — do NOT drop or overwrite Steve's changes.
-   - Watch two files especially:
-     • the four golden.pkr.hcl files — we added http_content lines; if Steve
-       touched them, keep BOTH sides.
-     • the base ansible role's grub_kernel_opts map — that's our Gate-A dependency.
-       If Steve changed it, re-verify net.ifnames=0 biosdevname=0 console=ttyS0
-       are still applied for SUSE and grub still regenerates.
-   - The local tree is what `pt --code-prefix` builds from, so rebase locally, then
-     force-push the feature branch to keep the remote current (it's my own branch,
-     safe to force-push).
-   - Report what the rebase pulled in and any conflicts you resolved BEFORE building.
+Context: SLES 16 CREATE fails in the repository-management role — "no repositories
+reachable"; it computed sles16_sp[0].repo and CDN2 has no SLES 16 content. Same
+blocker SLES 15 SP7 is stuck on. Two separate sub-problems to map:
 
-2) NETWORKING — approved as you proposed: #1 then #2, #3 stays in reserve.
-   - Try #1 (inst.copy_network=1) as a SINGLE cheap probe — one token on the
-     boot_command linux line. On the next VNC check, if eth0 still has no IP, do
-     NOT debug it — fall straight to #2.
-   - #2 (NetworkManager .nmconnection keyfile, ipv4.method=auto) is the real fix
-     and it's native: SLES 16 defaults to NetworkManager (wicked is gone). Confirm
-     NM is the active stack on the booted image, add the keyfile via the profile
-     post-script, and ensure NM is installed + enabled. Still pure-XML.
-   - Do NOT switch the profile to Agama JSON (#3) for networking. Networking is
-     solvable in XML; #3 stays shelved.
+1) THE ROLE VERSIONING BUG — what's the exact fix?
+   - In the repository-management role (sles-repo.j2 + defaults/main.yml SLES
+     presets), diff how SP6 (working) computes its .repo file vs what SLES 16 does.
+   - Determine precisely: is the SP-style name (sles16_sp[0]) a MISSING PRESET (a
+     small add for a no-Service-Pack version), or does the role's SLES version
+     logic HARDCODE the _sp pattern (a deeper change)?
+   - Report the exact fix and its size. Do NOT apply it.
 
-3) SCOPE CONFIRMATION — do this now, it's cheap:
-   - List every file you've modified on c5425849-sles16 vs main.
-   - Confirm you did NOT touch: any SP7 file (sles-15.7 pkrvars or sles15-SP7.xml),
-     any InSpec test/check, main directly, or pre-release Vault secrets.
-   - SP7 is out of scope and stays exactly as-is — we only derive from it, never
-     edit it.
+2) THE CDN2 CONTENT MECHANISM — who/what populates the mirror?
+   - Find how SLES content gets onto CDN2 (release.repositories.images.scs.sap):
+     the repository-synchronization playbook/pipeline (look in ansible/playbooks for
+     repository-synchronization-*, and pipelines/concourse for anything that syncs
+     repos) and its config.
+   - Determine: is there a config listing which SLES versions get synced, and are
+     SLES 16 (and SP7) simply missing from it — OR does it also require upstream
+     SLES 16 repo content to exist / be subscribed first (something a config change
+     alone can't satisfy)?
+   - Report the mechanism, where the config lives, what adding SLES 16 would
+     involve, and which part (if any) is outside a repo change (actual mirror
+     population / subscription). Do NOT run any sync or edit any config.
 
-GATES / DONE:
-- CREATE-green = install completes, eth0 has an IP, Packer SSHs in. That proves the
-  boot_command + networking. Stop there and report.
-- Not ticket-done, but Gate A already closed (base role carries the kernel args), so
-  once networking's fixed the ONLY SP7 deviation left is the add-on removal + the
-  DHCP connection. Keep it that clean.
+GOAL: turn two vague questions for John into precise ones — "the role fix is X
+(size Y); the sync config is at Z and SLES 16 is missing from it; the content step
+is <a config change I can make> vs <infra/subscription someone owns>."
 
-HARD RULES (unchanged): branch c5425849-sles16 only, never main; never edit an
-InSpec test to pass a build; never modify pre-release Vault (copy only); OpenStack
-act by resource ID.
-
-CHECKPOINT: ping me at CREATE-green with (a) the networking result (#1 or #2, and
-whether eth0 came up) and (b) the scope changelist. Hold there — we'll clean up the
-MR commit history before John sees it.
+HARD RULES: read-only; no commits; no roles-repo branch; never touch the CDN2
+mirror, Vault, or any sync/drift job; no changes to main. Hold at findings — I'll
+take the ownership calls to John.
