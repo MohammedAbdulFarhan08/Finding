@@ -1,30 +1,41 @@
-SLES 16 (SCSEC-8697), branch c5425849-sles16. Before I approve the sudoers fix, prove
-the reasoning against OUR ACTUAL BUILT IMAGES, not package theory. Still INVESTIGATION
-ONLY — no edits to sudoers.yml or anything, no commit, no push, no build-to-change.
-Read-only verification, then hold.
+APPROVED to implement Option C on branch c5425849-sles16 (roles repo). The
+verification proved it against our CDN2 RPMs and build #11. Implement exactly as
+scoped below — nothing wider.
 
-Your report concluded SLES 15 ships /etc/sudoers via the sudo package and SLES 16 ships
-/usr/etc/sudoers instead (stateless split). I need that confirmed on the real images
-our pipeline produces, not stated from how SUSE packaging generally works.
+THE CHANGE (Option C — existence-guard, minimal):
+- In base/tasks/sudoers.yml, the two tasks that edit /etc/sudoers directly (the
+  secure_path lineinfile at ~line 44, and task 3 — the other direct /etc/sudoers edit):
+  add a guard so they RUN only when /etc/sudoers exists, and SKIP when it's absent.
+- Use a stat of /etc/sudoers + `when: <stat>.stat.exists` on those two tasks. Register
+  the stat once, reuse it.
+- Do NOT touch the sudoers.d drop-in task (01-secure-path) — it already delivers
+  secure_path on 16 and must keep running on every OS.
 
-VERIFY on a built SLES 15 (SP6 or SP7) golden image — the one our pipeline builds:
-- Is /etc/sudoers actually present on the built image at the point base/tasks/sudoers.yml
-  runs? Show the evidence (ls -l / rpm -qf /etc/sudoers / which package owns it).
-- Is /usr/etc/sudoers absent on 15? Confirm.
-- Confirm NO team task/role/profile creates or moves /etc/sudoers on 15 — it's purely
-  the sudo package. (If something in our repos does touch it, I need to know.)
+HARD CONSTRAINTS — do NOT:
+- create /etc/sudoers on 16 (create: true) — proven dangerous: a present /etc/sudoers
+  shadows the vendor /usr/etc/sudoers and drops the whole vendor ruleset.
+- edit, move, or symlink the vendor /usr/etc/sudoers.
+- OS-gate with `when: major < 16` — use existence-guard (stat.exists), it's more robust
+  and self-adapts. (The verification recommended existence-guard over OS-gate.)
+- change any other task in sudoers.yml, or any other OS's behavior.
 
-VERIFY on a built SLES 16 image (or the SLES 16 sudo package from the live Pool repo):
-- /usr/etc/sudoers present, /etc/sudoers genuinely absent on a fresh install? Show it.
-- Is the sudoers.d/01-secure-path drop-in actually written AND actually read by sudo on
-  16 (i.e. the vendor /usr/etc/sudoers really contains @includedir /etc/sudoers.d)? Prove
-  secure_path is delivered via the drop-in independent of the /etc/sudoers edits.
-- Confirm /etc/sudoers is not a symlink/CoW to /usr/etc on 16 — genuinely not there.
+WHY THIS IS SAFE (must hold true after your change):
+- RHEL / Ubuntu / SLES 15: /etc/sudoers exists → stat.exists is true → both edits run
+  EXACTLY as today. Zero behavior change.
+- SLES 16: /etc/sudoers absent → both edits skip → secure_path still delivered by the
+  sudoers.d drop-in (vendor file has @includedir /etc/sudoers.d, proven read on build #11).
 
-If ALL of that holds, the Option C reasoning (existence-guard the two /etc/sudoers edits
-with when: <stat>.stat.exists so 15/RHEL/Ubuntu run exactly as today and 16 skips the
-redundant edits) is proven. If ANYTHING differs from your earlier report, flag it — it
-changes the fix.
+VALIDATE:
+- Re-run the aws-com build. Expected: base-configure's sudoers task no longer fails on
+  16; the play advances past ok=125. Report where it gets to.
+- If it stops later at a patch/zypper-update/STIG step → that's the known Updates/16.0
+  mirror gap (Steve's), NOT this change. Distinguish clearly in your report.
 
-HARD RULE: do not implement Option C or any sudoers change yet. I need the verification
-evidence AND a team sign-off first. Report the proof for each point above, then hold.
+STILL HELD (unchanged):
+- NO MR, no merge — all SLES 16 MRs held per John.
+- Branch c5425849-sles16 only; never main.
+- Never edit an InSpec test/check to pass a build.
+- Roles repo is CODEOWNED (Gabriel + Jean-Paul) — keep the diff to just the two guards.
+
+REPORT: the exact diff (should be a stat + two `when:` clauses, nothing else), and
+where the build gets to with the stop cause named precisely. Then hold.
