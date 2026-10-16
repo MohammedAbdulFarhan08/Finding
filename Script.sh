@@ -1,43 +1,30 @@
-SLES 16 (SCSEC-8697), roles branch c5425849-sles16. Build #11 now fails at:
-  base: "Ensure Defaults secure_path is set in /etc/sudoers" → /etc/sudoers does not exist (rc 257)
-in base/tasks/sudoers.yml (an OS-AGNOSTIC shared task, line ~44). This is a
-security-sensitive, CODEOWNED, shared-across-every-OS task. Treat it with extra care.
+SLES 16 (SCSEC-8697), branch c5425849-sles16. Before I approve the sudoers fix, prove
+the reasoning against OUR ACTUAL BUILT IMAGES, not package theory. Still INVESTIGATION
+ONLY — no edits to sudoers.yml or anything, no commit, no push, no build-to-change.
+Read-only verification, then hold.
 
-THIS IS INVESTIGATION ONLY. Do NOT edit sudoers.yml or any sudoers-related file. Do
-NOT commit, do NOT push, do NOT build. Read, analyze, recommend — then STOP and wait
-for my explicit approval before changing anything.
+Your report concluded SLES 15 ships /etc/sudoers via the sudo package and SLES 16 ships
+/usr/etc/sudoers instead (stateless split). I need that confirmed on the real images
+our pipeline produces, not stated from how SUSE packaging generally works.
 
-PRIMARY QUESTION — how does SLES 15 (SP5/SP6/SP7) get PAST this exact task today?
-Those builds work, so SLES 15 clearly satisfies this task somehow. Find out exactly how:
-- Does /etc/sudoers exist on a built SLES 15 image at the point this task runs? If so,
-  what puts it there — the base package set (sudo package ships it?), an earlier task,
-  the AutoYaST profile, something in os/sles-15.yml?
-- Does SLES 15 also have a /usr/etc/sudoers, or only /etc/sudoers? i.e. is the
-  /usr/etc stateless split NEW in 16, or does 15 have it too and handle it differently?
-- Walk the full ordering: what runs before base/tasks/sudoers.yml that might create or
-  symlink /etc/sudoers on 15 but not on 16?
+VERIFY on a built SLES 15 (SP6 or SP7) golden image — the one our pipeline builds:
+- Is /etc/sudoers actually present on the built image at the point base/tasks/sudoers.yml
+  runs? Show the evidence (ls -l / rpm -qf /etc/sudoers / which package owns it).
+- Is /usr/etc/sudoers absent on 15? Confirm.
+- Confirm NO team task/role/profile creates or moves /etc/sudoers on 15 — it's purely
+  the sudo package. (If something in our repos does touch it, I need to know.)
 
-SECONDARY — the SLES 16 reality (read-only, off the built image / the Pool content):
-- On SLES 16, is /etc/sudoers genuinely absent, a symlink to /usr/etc/sudoers, or
-  copy-on-write? Confirm which — it changes the fix.
-- What does the sudoers.d/01-secure-path drop-in (the same task writes it) actually
-  deliver? Is secure_path already set via that drop-in regardless of the /etc/sudoers
-  edit? If so, the /etc/sudoers lineinfile may be redundant on 16.
-- Does the `sudo` package in the SLES 16 Pool repo ship /etc/sudoers or /usr/etc/sudoers?
+VERIFY on a built SLES 16 image (or the SLES 16 sudo package from the live Pool repo):
+- /usr/etc/sudoers present, /etc/sudoers genuinely absent on a fresh install? Show it.
+- Is the sudoers.d/01-secure-path drop-in actually written AND actually read by sudo on
+  16 (i.e. the vendor /usr/etc/sudoers really contains @includedir /etc/sudoers.d)? Prove
+  secure_path is delivered via the drop-in independent of the /etc/sudoers edits.
+- Confirm /etc/sudoers is not a symlink/CoW to /usr/etc on 16 — genuinely not there.
 
-THEN RECOMMEND (do not implement): lay out the options you see — e.g. (a) ensure the
-sudo package / an early step provides /etc/sudoers on 16 the same way 15 gets it,
-(b) point SLES 16 at /usr/etc/sudoers via an OS-gated branch, (c) rely on the
-sudoers.d drop-in and guard the /etc/sudoers edit off for 16 — and tell me which is
-LOWEST blast radius (ideally one that changes NOTHING for RHEL/Ubuntu/SLES 15). For
-each option, state explicitly what other OSes it could affect.
+If ALL of that holds, the Option C reasoning (existence-guard the two /etc/sudoers edits
+with when: <stat>.stat.exists so 15/RHEL/Ubuntu run exactly as today and 16 skips the
+redundant edits) is proven. If ANYTHING differs from your earlier report, flag it — it
+changes the fix.
 
-CRITICAL: if any fix touches the shared sudoers.yml or any sudoers behavior, you must
-ASK ME FIRST and get explicit approval before implementing. No commit, no push, no
-build until I approve. A wrong change here can break sudo/privilege config on EVERY
-image — so bias toward the smallest possible, most SLES-16-isolated change, and when
-in doubt, ask rather than act.
-
-REPORT: how SLES 15 satisfies this task today, the SLES 16 /etc/sudoers reality, what
-the drop-in delivers, and your ranked options with blast radius each. Then hold for my
-decision.
+HARD RULE: do not implement Option C or any sudoers change yet. I need the verification
+evidence AND a team sign-off first. Report the proof for each point above, then hold.
