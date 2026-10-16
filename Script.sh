@@ -1,57 +1,44 @@
-Picking up the SLES 16 repository-management role fix (SCSEC-8697). Context below,
-then a read + draft task — do NOT build or MR yet. Stop at the gate.
+Continue SLES 16 (SCSEC-8697) on the roles-repo branch c5425849-sles16. The
+repository-management fix is validated (build #10). Next gap: base-configure fails
+with "Could not find or access 'os/sles-16.yml'". Author the base-role OS files, then
+validate. Same gates as before — no MR, nothing on main.
 
-WHAT CHANGED (from Steve, my TL, over Slack):
-- Steve confirmed SLES 16.0 is syncing to the CDN2 mirror and pointed me at the S3
-  bucket: us-east-2.repositories.images.scs.sap. He said "we just need to update the
-  repository-management role to support it."
-- I offered to take the role side; he handed it to me. So the role fix is now MY
-  work on this ticket. SP7 is NOT mine — reference only.
+TASK 1 — author the base-role OS files (mirror SLES 15, adjust only real 16 diffs):
+- base-configure does include_vars/include_tasks os/<distro>-<major>.yml per OS; only
+  base/vars/os/sles-15.yml + base/tasks/os/sles-16.yml's 15 equivalent exist. Create:
+    • base/vars/os/sles-16.yml
+    • base/tasks/os/sles-16.yml
+- Read the sles-15 versions first and mirror their structure exactly. The vars file
+  defines at least base_os_package_list, base_sudoers_path,
+  base_logrotate_postrotate_rsyslog — carry those over.
+- Change ONLY what SLES 16 genuinely differs on, and for each change, show me WHY
+  (don't blindly copy, don't speculatively change). Known candidates to check:
+    • logrotate: SLES 16 minimal lacks /etc/logrotate.conf (that's the report.sh
+      "cannot stat" warning from earlier) — confirm whether logrotate is present/needed
+      and set base_logrotate_postrotate_rsyslog / the package list accordingly.
+    • package names: verify every package in base_os_package_list actually exists in
+      the SLES 16 repos (16 consolidated modules — some 15 package names may differ or
+      be absent). Flag any that don't resolve.
+- Keep it minimal and SLES-16-gated; do not touch the sles-15 files or any other OS.
 
-MRs to read from your side (infrastructure repo, gitlab .../scs/golden-images/infrastructure):
-- !444 feat(repo-sync): enable SLES 16.0 mirroring on CDN2 zypper sync — STILL OPEN.
-  Adds sles16_0 to release_list + minor_release_versions in
-  ansible/repository-synchronization-zypper/sles15.yml, product IDs SLES 2930 /
-  SLES_SAP 2985 / sle-ha 2937 / PackageHub 3137. Key notes from the MR: SLES 16
-  CONSOLIDATES the modular structure (no separate basesystem/containers/
-  server-applications modules — product list intentionally shorter than SP7), and
-  it's CDN2-ONLY. Its own testing note says the sync mirrors SLES 16 repos on the
-  NEXT RUN AFTER MERGE — so the package repos don't exist on CDN2 until !444 merges
-  and the sync runs.
-- !443 feat(image-list): enable SLES 15 SP7 for CDN2 production — SP7 counterpart,
-  reference only, NOT my work.
-- !445 feat(terraform): CDN2 EBS expansion for ARM — unrelated infra, ignore.
-Read !444 and !443 (overview + diff) and confirm my understanding above.
+TASK 2 — regression proof (still open from last round, do it now):
+- Render the SLES 15 SP5/SP6/SP7 .repo output with the repository-management role
+  BEFORE and AFTER your de-hardcode and confirm byte-identical. This proves zero blast
+  radius on the shared role for the CODEOWNED review. Report the diff (expect: none).
 
-TASK 1 — map the mirror reality (read-only):
-- In the S3 bucket, check what's actually mirrored for SLES 16 RIGHT NOW. I've seen
-  SLE-INSTALLER/16.0/x86_64/product/ (installer medium + repodata). Look specifically
-  for the PRODUCT/package repos — SLES, SLES_SAP, sle-ha, PackageHub 16.0 paths —
-  not just SLE-INSTALLER. Report whether those product repo paths exist yet with
-  repodata, or only the installer path. (If only installer, that confirms !444 hasn't
-  synced yet.)
-- Capture the real SLES 16 repo-IDs and baseurl paths as they exist/will exist on the
-  mirror, so the role points at real paths, not guessed ones.
+TASK 3 — validate:
+- Re-run the aws-com build. Expected outcome: base-configure now passes os/sles-16.yml
+  and the build advances further. Report where it gets to.
+- Realistic stop point: the image can provision from Pool, but Updates/16.0 isn't
+  mirrored yet — so if it later hits a patch/zypper-update/STIG step with nothing to
+  pull, that's the known mirror gap (Steve's), NOT a bug in your files. Distinguish the
+  two in your report: "failed because my file is wrong" vs "failed at patching because
+  Updates/16.0 isn't on CDN2."
 
-TASK 2 — diff the role (read-only):
-- In the repository-management role (sles-repo.j2 + defaults/main.yml SLES presets),
-  diff how SP6 (working) computes its .repo file vs what SLES 16 produces. Pin the
-  exact spots where the 15-SP layout is hardcoded (the sles16_sp[0].repo filename,
-  the module-name split, the baseurl paths — all shaped for SLES-15's modular layout).
-- Given SLES 16 is unified/no-SP, propose the MINIMAL de-hardcode to support a no-SP,
-  unified-module version. Show me the exact change and its size.
+HARD RULES: branch c5425849-sles16 only; never main; never edit an InSpec test/check;
+roles repo is CODEOWNED (Gabriel + Jean-Paul) so keep the diff minimal and 16-scoped;
+OpenStack by resource ID. Do NOT open any MR — all SLES 16 MRs held per John.
 
-HARD GATE — STOP HERE:
-- Do NOT run a validation build yet. The SLES 16 PRODUCT repos aren't mirrored until
-  !444 merges + the sync runs — a build now hits the same "no repositories reachable"
-  and tells us nothing. Draft the fix, don't validate it.
-- Do NOT open any MR (John's directive: hold all SLES 16 MRs until the release flow
-  is going).
-- Branching the ROLES repo is new scope — it's shared across all OSes and CODEOWNED
-  (Gabriel + Jean-Paul approve). Branch c5425849-sles16 only; never commit to main;
-  never edit an InSpec test; OpenStack by resource ID.
-
-REPORT: confirm the MR understanding, the mirror state (product repos present or
-installer-only), the exact role de-hardcode with its diff, and tell me the trigger
-for when a validation build becomes possible (i.e. product repos visible on CDN2
-after !444). Then hold.
+REPORT: the two new files with rationale for every deviation from sles-15, the SLES-15
+regression diff result, and where the build gets to (naming the stop cause precisely).
+Then hold.
