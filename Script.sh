@@ -1,44 +1,43 @@
-Continue SLES 16 (SCSEC-8697) on the roles-repo branch c5425849-sles16. The
-repository-management fix is validated (build #10). Next gap: base-configure fails
-with "Could not find or access 'os/sles-16.yml'". Author the base-role OS files, then
-validate. Same gates as before — no MR, nothing on main.
+SLES 16 (SCSEC-8697), roles branch c5425849-sles16. Build #11 now fails at:
+  base: "Ensure Defaults secure_path is set in /etc/sudoers" → /etc/sudoers does not exist (rc 257)
+in base/tasks/sudoers.yml (an OS-AGNOSTIC shared task, line ~44). This is a
+security-sensitive, CODEOWNED, shared-across-every-OS task. Treat it with extra care.
 
-TASK 1 — author the base-role OS files (mirror SLES 15, adjust only real 16 diffs):
-- base-configure does include_vars/include_tasks os/<distro>-<major>.yml per OS; only
-  base/vars/os/sles-15.yml + base/tasks/os/sles-16.yml's 15 equivalent exist. Create:
-    • base/vars/os/sles-16.yml
-    • base/tasks/os/sles-16.yml
-- Read the sles-15 versions first and mirror their structure exactly. The vars file
-  defines at least base_os_package_list, base_sudoers_path,
-  base_logrotate_postrotate_rsyslog — carry those over.
-- Change ONLY what SLES 16 genuinely differs on, and for each change, show me WHY
-  (don't blindly copy, don't speculatively change). Known candidates to check:
-    • logrotate: SLES 16 minimal lacks /etc/logrotate.conf (that's the report.sh
-      "cannot stat" warning from earlier) — confirm whether logrotate is present/needed
-      and set base_logrotate_postrotate_rsyslog / the package list accordingly.
-    • package names: verify every package in base_os_package_list actually exists in
-      the SLES 16 repos (16 consolidated modules — some 15 package names may differ or
-      be absent). Flag any that don't resolve.
-- Keep it minimal and SLES-16-gated; do not touch the sles-15 files or any other OS.
+THIS IS INVESTIGATION ONLY. Do NOT edit sudoers.yml or any sudoers-related file. Do
+NOT commit, do NOT push, do NOT build. Read, analyze, recommend — then STOP and wait
+for my explicit approval before changing anything.
 
-TASK 2 — regression proof (still open from last round, do it now):
-- Render the SLES 15 SP5/SP6/SP7 .repo output with the repository-management role
-  BEFORE and AFTER your de-hardcode and confirm byte-identical. This proves zero blast
-  radius on the shared role for the CODEOWNED review. Report the diff (expect: none).
+PRIMARY QUESTION — how does SLES 15 (SP5/SP6/SP7) get PAST this exact task today?
+Those builds work, so SLES 15 clearly satisfies this task somehow. Find out exactly how:
+- Does /etc/sudoers exist on a built SLES 15 image at the point this task runs? If so,
+  what puts it there — the base package set (sudo package ships it?), an earlier task,
+  the AutoYaST profile, something in os/sles-15.yml?
+- Does SLES 15 also have a /usr/etc/sudoers, or only /etc/sudoers? i.e. is the
+  /usr/etc stateless split NEW in 16, or does 15 have it too and handle it differently?
+- Walk the full ordering: what runs before base/tasks/sudoers.yml that might create or
+  symlink /etc/sudoers on 15 but not on 16?
 
-TASK 3 — validate:
-- Re-run the aws-com build. Expected outcome: base-configure now passes os/sles-16.yml
-  and the build advances further. Report where it gets to.
-- Realistic stop point: the image can provision from Pool, but Updates/16.0 isn't
-  mirrored yet — so if it later hits a patch/zypper-update/STIG step with nothing to
-  pull, that's the known mirror gap (Steve's), NOT a bug in your files. Distinguish the
-  two in your report: "failed because my file is wrong" vs "failed at patching because
-  Updates/16.0 isn't on CDN2."
+SECONDARY — the SLES 16 reality (read-only, off the built image / the Pool content):
+- On SLES 16, is /etc/sudoers genuinely absent, a symlink to /usr/etc/sudoers, or
+  copy-on-write? Confirm which — it changes the fix.
+- What does the sudoers.d/01-secure-path drop-in (the same task writes it) actually
+  deliver? Is secure_path already set via that drop-in regardless of the /etc/sudoers
+  edit? If so, the /etc/sudoers lineinfile may be redundant on 16.
+- Does the `sudo` package in the SLES 16 Pool repo ship /etc/sudoers or /usr/etc/sudoers?
 
-HARD RULES: branch c5425849-sles16 only; never main; never edit an InSpec test/check;
-roles repo is CODEOWNED (Gabriel + Jean-Paul) so keep the diff minimal and 16-scoped;
-OpenStack by resource ID. Do NOT open any MR — all SLES 16 MRs held per John.
+THEN RECOMMEND (do not implement): lay out the options you see — e.g. (a) ensure the
+sudo package / an early step provides /etc/sudoers on 16 the same way 15 gets it,
+(b) point SLES 16 at /usr/etc/sudoers via an OS-gated branch, (c) rely on the
+sudoers.d drop-in and guard the /etc/sudoers edit off for 16 — and tell me which is
+LOWEST blast radius (ideally one that changes NOTHING for RHEL/Ubuntu/SLES 15). For
+each option, state explicitly what other OSes it could affect.
 
-REPORT: the two new files with rationale for every deviation from sles-15, the SLES-15
-regression diff result, and where the build gets to (naming the stop cause precisely).
-Then hold.
+CRITICAL: if any fix touches the shared sudoers.yml or any sudoers behavior, you must
+ASK ME FIRST and get explicit approval before implementing. No commit, no push, no
+build until I approve. A wrong change here can break sudo/privilege config on EVERY
+image — so bias toward the smallest possible, most SLES-16-isolated change, and when
+in doubt, ask rather than act.
+
+REPORT: how SLES 15 satisfies this task today, the SLES 16 /etc/sudoers reality, what
+the drop-in delivers, and your ranked options with blast radius each. Then hold for my
+decision.
