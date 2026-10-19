@@ -1,50 +1,42 @@
-Continue SLES 16 (SCSEC-8697), roles branch c5425849-sles16. Two actions up front, then
-a GATED cron decision, then build. No MR, no merge.
+Continue SLES 16 (SCSEC-8697), roles branch c5425849-sles16. Steve confirmed clamav-nextgen
+is mine to do; the DISA/STIG role remains the hard stop. Author the clamav-nextgen SLES 16
+vars file, validate, then hold. No MR, no merge.
 
-1) PUSH: force-push the rebased infrastructure branch to origin with --force-with-lease
-   (my own branch, safe). Local and remote must match before the build.
+GAP: build #14 fails at clamav-nextgen: "Load version-specific variables for SLES" → missing
+clamav-nextgen/vars/sles/16.0.yml (only sles/<15.x>.yml exist).
 
-2) VERIFY CRON NEED ON THE REAL SLES 15 IMAGE (read-only) — do this BEFORE adding cron.
-   I don't want to install on install-pattern reasoning; prove it like we did for sudoers.
-   On a BUILT SLES 15 (SP6/SP7) golden image — our pipeline's image, not SUSE defaults:
-   - Is the cron daemon (cronie) actually installed AND the service enabled + running?
-   - Is /etc/cron.hourly/logrotate actually present and firing (i.e. logrotate really
-     runs via cron on 15, not via a systemd timer or some other mechanism)?
-   - Confirm what else on 15 schedules via cron (aide --check, audit STIG watches on
-     /etc/cron.d + /var/spool/cron, control SLES-15-030130) is genuinely cron-driven on
-     the built image.
-   REPORT this first. Interpretation:
-   - If SLES 15's built image uses cron for logrotate/aide/STIG → installing cron on 16
-     is RESTORING parity, not adding capability. Proceed to step 3.
-   - If SLES 15 does NOT actually use cron for these (e.g. systemd timers instead) → STOP
-     and show me; the decision changes and I'll re-evaluate.
-
-3) INSTALL CRON (only if step 2 confirms SLES 15 relies on it):
-   - Add `cron` to base_os_package_list in base/vars/os/sles-16.yml only (pulls in cronie).
-   - Keep the diff to that one package line. Do not touch sles-15 or any other OS file.
-
-BEFORE TRIGGERING THE BUILD:
-   - Force-check the roles git resource (fly check-resource) and confirm it picked up the
-     NEW commit before triggering — don't run stale code (build #12 lesson).
-   - Vault was down over the weekend (Oct 17-18). If a prior build failed, confirm it was
-     a real task failure, not a Vault/secrets error, before trusting the result.
+TASK — author clamav-nextgen/vars/sles/16.0.yml (mirror SLES 15, adjust only real 16 diffs):
+- Read the SLES 15 vars file(s) in clamav-nextgen/vars/sles/ first and mirror the structure
+  exactly. Create the 16.0.yml by the same pattern os/sles-16.yml followed.
+- Change ONLY what SLES 16 genuinely differs on, and for EACH change show me WHY (verified
+  against live SLES 16 Pool content / the built image — not package theory). Likely things
+  to check:
+  • clamav package name(s) on SLES 16 — confirm they exist/resolve in the SLES 16 Pool repo
+    (16 consolidated modules; names may differ or live in a different module).
+  • any path/service/unit names the vars file references that moved under 16's /usr/etc
+    stateless split or the unified module layout.
+- Keep it minimal and 16-scoped. Do NOT touch the sles-15 vars, the clamav tasks/logic, or
+  any other role.
 
 VALIDATE (aws-com):
-   - Expected: the hourly logrotate crontab task now passes; play advances past ok=152.
-   - Confirm cron is actually RUNNING on the 16 image, not just installed: cron service
-     enabled + active, and /etc/cron.hourly/logrotate present. If the service isn't
-     enabled, flag it — do NOT fix without asking.
+- Re-run the build (force-check the roles git resource first, confirm it has my new commit —
+  build #12 stale-code lesson). Expected: clamav-nextgen now loads its 16 vars and the play
+  advances past ok=206.
+- Name precisely where it stops next: my clamav file / a new missing-vars gap in another
+  pre-STIG role / the DISA-STIG hard stop / Updates/16.0.
 
-HARD STOP AT HARDENING:
-   - When the build reaches the hardening/STIG step and breaks (e.g. a missing SLES 16
-     DISA/STIG role), do NOT create or modify any STIG/hardening role. Capture the exact
-     failure, stop, and report. Steve wants a call with me and Ram to plan that piece.
+HARD STOP (unchanged): if the build reaches the hardening/DISA-STIG role and breaks, do NOT
+create or modify any STIG/hardening role — capture the failure and report. That's the call
+with Steve + Ram.
 
-HARD RULES: branch c5425849-sles16 only; never main; never edit an InSpec test/check;
-roles repo CODEOWNED (Gabriel + Jean-Paul) — minimal 16-scoped diff; OpenStack by
-resource ID. MR held (John).
+ALSO still open (don't lose it): the cron SERVICE enabled/active state on the built 16 image
+is still unverified — if you can reach a finalized image/scan this run, confirm cron is
+enabled+active; if not, leave it flagged, do NOT add an enable task without asking.
 
-REPORT: push result; the SLES 15 cron verification (with evidence); the one-line cron
-diff IF you proceeded; the cron service state on the built 16 image; and where the build
-stops (name the cause — my change / a new minimal-install gap / hardening / Updates/16.0).
-Then hold.
+HARD RULES: branch c5425849-sles16 only; never main; never edit an InSpec test/check; roles
+repo CODEOWNED (Gabriel + Jean-Paul) — minimal 16-scoped diff; OpenStack by resource ID.
+MR held (John).
+
+REPORT: the 16.0.yml with rationale per deviation, the clamav package-name confirmation
+against the Pool, where the build stops next, and the cron-service state if you could reach
+it. Then hold.
