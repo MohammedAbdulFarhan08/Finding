@@ -1,36 +1,24 @@
-SLES 16 (SCSEC-8697), branch c5425849-sles16. clamav validated (build 16.1, ok=258).
-New gap: base: "Ensure ifcfg-eth0 exists for SLES" → /etc/sysconfig/network does not
-exist (base/tasks/networking.yml:24). It writes a wicked-style ifcfg gated on
-ansible_os_family == 'Suse'; SLES 16 is NetworkManager-only (wicked removed), so the
-dir and the ifcfg are obsolete on 16.
+APPROVED — apply the existence-guard. Verification closed the no-network risk (the
+mid-build reboot proved eth0 DHCP survives with no ifcfg) and the grep showed no
+downstream dependency. Proceed.
 
-This is a SHARED base task AND it's networking — so verify BEFORE guarding. INVESTIGATION
-FIRST, then hold for my approval before any change. No commit, no push.
+CHANGE: in base/tasks/networking.yml, existence-guard the "Ensure ifcfg-eth0 exists for
+SLES" task — stat /etc/sysconfig/network (register once), add `<stat>.stat.exists` to
+the existing `when: ansible_os_family == 'Suse'`. Skip when absent. Do NOT touch the
+Azure/RHEL tasks or any other OS. Minimal diff, 16-scoped.
 
-VERIFY (the stakes are network connectivity — be certain skipping is safe):
-- Confirm SLES 16 eth0 gets DHCP with NO wicked ifcfg — i.e. the Agama NM DHCP keyfile
-  (ipv4.method=auto) is what brings eth0 up, and it persists to the FINAL image's first
-  boot, not just during build. Show the evidence (the NM keyfile present on the built
-  image, eth0 up via NM).
-- Confirm nothing downstream in the build or the image depends on /etc/sysconfig/network
-  or the ifcfg-eth0 file existing (grep the roles for references).
-- Confirm SLES 15 DOES have /etc/sysconfig/network + uses wicked (so the guard leaves 15
-  untouched).
+BEFORE BUILD: force-check the roles git resource, confirm it has the new commit (build
+#12 stale-code lesson). If a prior build failed, confirm it wasn't a Vault/secrets error.
 
-THEN RECOMMEND (don't implement): existence-guard the task on /etc/sysconfig/network
-(skip when absent) — the self-adapting variant, consistent with the sudoers fix. NOT the
-major<16 version guard. State blast radius: 15/RHEL/Ubuntu unchanged (dir exists → runs as
-today), 16 skips the obsolete wicked write and relies on NM.
+VALIDATE (aws-com): expect play past ok=258 toward the DISA/STIG role. Name where it
+stops precisely.
 
-If verification shows ANY risk that eth0 loses DHCP on 16 by skipping → STOP and show me;
-do not guard.
+CRON SERVICE — now that a build should finalize an image, verify cron is enabled+active
+on the built 16 image (systemctl is-enabled/is-active) and /etc/cron.hourly/logrotate
+present. If NOT enabled, flag it — do NOT add an enable task without asking.
 
-Also still open: cron service enabled/active on the built 16 image — verify this run if you
-can reach a finalized image; else leave flagged, don't add an enable task without asking.
+HARD STOP: DISA/STIG role → do not author, capture + report (Steve + Ram call).
+HARD RULES: branch c5425849-sles16 only; never main; never edit InSpec; CODEOWNED roles
+repo — minimal diff; OpenStack by ID. MR held.
 
-HARD STOP unchanged: DISA/STIG role → do not author, capture + report (call with Steve + Ram).
-HARD RULES: branch only; never main; never edit InSpec; CODEOWNED roles repo — minimal
-16-scoped diff; OpenStack by ID. MR held.
-
-REPORT: the eth0-DHCP-survives-without-ifcfg evidence, the downstream-dependency check, the
-recommended existence-guard, and the cron service state if reachable. Then hold.
+REPORT: the one-task diff, where the build stops, and the cron service state. Then hold.
