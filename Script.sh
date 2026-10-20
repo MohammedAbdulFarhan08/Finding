@@ -1,42 +1,36 @@
-Continue SLES 16 (SCSEC-8697), roles branch c5425849-sles16. Steve confirmed clamav-nextgen
-is mine to do; the DISA/STIG role remains the hard stop. Author the clamav-nextgen SLES 16
-vars file, validate, then hold. No MR, no merge.
+SLES 16 (SCSEC-8697), branch c5425849-sles16. clamav validated (build 16.1, ok=258).
+New gap: base: "Ensure ifcfg-eth0 exists for SLES" → /etc/sysconfig/network does not
+exist (base/tasks/networking.yml:24). It writes a wicked-style ifcfg gated on
+ansible_os_family == 'Suse'; SLES 16 is NetworkManager-only (wicked removed), so the
+dir and the ifcfg are obsolete on 16.
 
-GAP: build #14 fails at clamav-nextgen: "Load version-specific variables for SLES" → missing
-clamav-nextgen/vars/sles/16.0.yml (only sles/<15.x>.yml exist).
+This is a SHARED base task AND it's networking — so verify BEFORE guarding. INVESTIGATION
+FIRST, then hold for my approval before any change. No commit, no push.
 
-TASK — author clamav-nextgen/vars/sles/16.0.yml (mirror SLES 15, adjust only real 16 diffs):
-- Read the SLES 15 vars file(s) in clamav-nextgen/vars/sles/ first and mirror the structure
-  exactly. Create the 16.0.yml by the same pattern os/sles-16.yml followed.
-- Change ONLY what SLES 16 genuinely differs on, and for EACH change show me WHY (verified
-  against live SLES 16 Pool content / the built image — not package theory). Likely things
-  to check:
-  • clamav package name(s) on SLES 16 — confirm they exist/resolve in the SLES 16 Pool repo
-    (16 consolidated modules; names may differ or live in a different module).
-  • any path/service/unit names the vars file references that moved under 16's /usr/etc
-    stateless split or the unified module layout.
-- Keep it minimal and 16-scoped. Do NOT touch the sles-15 vars, the clamav tasks/logic, or
-  any other role.
+VERIFY (the stakes are network connectivity — be certain skipping is safe):
+- Confirm SLES 16 eth0 gets DHCP with NO wicked ifcfg — i.e. the Agama NM DHCP keyfile
+  (ipv4.method=auto) is what brings eth0 up, and it persists to the FINAL image's first
+  boot, not just during build. Show the evidence (the NM keyfile present on the built
+  image, eth0 up via NM).
+- Confirm nothing downstream in the build or the image depends on /etc/sysconfig/network
+  or the ifcfg-eth0 file existing (grep the roles for references).
+- Confirm SLES 15 DOES have /etc/sysconfig/network + uses wicked (so the guard leaves 15
+  untouched).
 
-VALIDATE (aws-com):
-- Re-run the build (force-check the roles git resource first, confirm it has my new commit —
-  build #12 stale-code lesson). Expected: clamav-nextgen now loads its 16 vars and the play
-  advances past ok=206.
-- Name precisely where it stops next: my clamav file / a new missing-vars gap in another
-  pre-STIG role / the DISA-STIG hard stop / Updates/16.0.
+THEN RECOMMEND (don't implement): existence-guard the task on /etc/sysconfig/network
+(skip when absent) — the self-adapting variant, consistent with the sudoers fix. NOT the
+major<16 version guard. State blast radius: 15/RHEL/Ubuntu unchanged (dir exists → runs as
+today), 16 skips the obsolete wicked write and relies on NM.
 
-HARD STOP (unchanged): if the build reaches the hardening/DISA-STIG role and breaks, do NOT
-create or modify any STIG/hardening role — capture the failure and report. That's the call
-with Steve + Ram.
+If verification shows ANY risk that eth0 loses DHCP on 16 by skipping → STOP and show me;
+do not guard.
 
-ALSO still open (don't lose it): the cron SERVICE enabled/active state on the built 16 image
-is still unverified — if you can reach a finalized image/scan this run, confirm cron is
-enabled+active; if not, leave it flagged, do NOT add an enable task without asking.
+Also still open: cron service enabled/active on the built 16 image — verify this run if you
+can reach a finalized image; else leave flagged, don't add an enable task without asking.
 
-HARD RULES: branch c5425849-sles16 only; never main; never edit an InSpec test/check; roles
-repo CODEOWNED (Gabriel + Jean-Paul) — minimal 16-scoped diff; OpenStack by resource ID.
-MR held (John).
+HARD STOP unchanged: DISA/STIG role → do not author, capture + report (call with Steve + Ram).
+HARD RULES: branch only; never main; never edit InSpec; CODEOWNED roles repo — minimal
+16-scoped diff; OpenStack by ID. MR held.
 
-REPORT: the 16.0.yml with rationale per deviation, the clamav package-name confirmation
-against the Pool, where the build stops next, and the cron-service state if you could reach
-it. Then hold.
+REPORT: the eth0-DHCP-survives-without-ifcfg evidence, the downstream-dependency check, the
+recommended existence-guard, and the cron service state if reachable. Then hold.
