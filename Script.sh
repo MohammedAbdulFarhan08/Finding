@@ -1,41 +1,39 @@
-SLES 16 (SCSEC-8697), branch c5425849-sles16. Two things, both read-only / no new
-feature code. We're waiting on Steve (collectd → PackageHub on the repo-sync, his side)
-and the STIG planning call, so this is "map the remaining path + get MR-ready," NOT
-finish. Do NOT author the STIG role, do NOT work around collectd, do NOT open any MR.
+I'm prepping for a planning call with Steve and Ram about standing up DISA STIG +
+FIPS hardening for SLES 16 (ticket SCSEC-8697, my branch c5425849-sles16). This is
+the hard stop on the SLES 16 enablement — everything up to FIPS is done and
+validated; STIG and FIPS are security-sensitive so I'm NOT writing them solo, I'm
+gathering facts for the call.
 
-1) MAP THE REMAINING GAPS — READ-ONLY (no build, no collectd skip):
-   The build currently stops at aws-cloudwatch-agent (collectd, Steve's). I want to know
-   the FULL remaining user-owned path before PackageHub lands, instead of discovering it
-   one build at a time.
-   - From the harden/build playbook ordering, list every role/task that runs AFTER
-     aws-cloudwatch-agent and BEFORE the disa-stig (hardening) role.
-   - For each of those roles, check read-only whether it has SLES 16 support — i.e. does
-     it need a sles/16.0.yml vars file (like clamav-nextgen did), or make SLES-15/
-     minimal-install assumptions (a package/path/service that 16 minimal drops, like
-     cron/sudoers/logrotate)? Flag each likely gap.
-   - Classify each: user-owned (missing vars / minimal-install gap, same pattern as the
-     ones I've already fixed) vs the disa-stig hard stop vs Steve's mirror side.
-   - Goal: a short list of "here are the N remaining gaps that are mine, in order, up to
-     the STIG role." Do NOT fix them yet — just map them.
+This task is READ-ONLY. Do not edit, create, commit, or push anything. Just read the
+repos and give me a briefing. The repos are in my feature tree ~/c5425849-sles16
+(rebased on main) — read the current state there.
 
-2) BRANCH STATE SUMMARY (for the MR when the hold lifts + for the STIG call):
-   - List every file changed on c5425849-sles16 vs main, grouped (packer / image-lists /
-     base-role os files / sudoers / cron / clamav / networking), with a one-line what+why
-     each, and which build validated it.
-   - Confirm the branch is clean: everything committed + pushed, nothing half-finished,
-     and re-confirm SP7/InSpec/main/Vault/pre-release-Vault all still untouched.
-   - Note any throwaway/experimental commits from the build churn (#6–#17) that should be
-     squashed before John sees the history — but do NOT squash or open the MR yet.
+Investigate and report on:
 
-3) STILL OPEN — note, don't fix:
-   - Collectd: Steve's (PackageHub via repo-sync). Build stays stopped there until it
-     syncs to CDN2. Not ours.
-   - Cron service enabled/active on the built image: still unverifiable (no build
-     finalizes an image — the STIG-role gap blocks finalization). Leave flagged.
-   - disa-stig role: the hard stop. Steve + Ram + me plan it on a call.
+1. STIG role structure. Read the existing *-disa-stig roles in ansible/roles,
+   especially rhel10-disa-stig (the newest new-OS example) and sles15-disa-stig (the
+   SUSE one). For each: how the role is laid out (tasks/vars/templates), how it's
+   gated and invoked from harden.yml, where the control definitions come from
+   (benchmark / SSG XML / vars), and how EXEMPTIONS.md is structured — show me what a
+   disabled control entry looks like and the stated reason.
 
-HARD RULES: branch only; never main; never edit InSpec; CODEOWNED roles repo; OpenStack
-by ID. No MR, no STIG role, no collectd workaround.
+2. Where SLES 16 breaks today. Find and QUOTE the gate in harden.yml that currently
+   runs sles15-disa-stig on SLES 16 (os_family-based, around line 272). Confirm no
+   sles16-disa-stig role exists. Tell me the minimal shape a sles16-disa-stig role
+   would need to exist and be wired in — do NOT write it, just describe the shape.
 
-REPORT: the ordered list of remaining user-owned gaps up to the STIG role, the grouped
-branch changelist, and the squash candidates. Then hold.
+3. FIPS role. Read the fips role. How does it do FIPS for RHEL vs SLES 15? Find and
+   QUOTE the path logic that builds a sles/16/sp0 path that doesn't exist. SLES 16
+   uses the OpenSSL-3 provider FIPS model (libopenssl-3-fips-provider /
+   patterns-base-fips) rather than the SP-style layout — point out exactly what in
+   the role assumes the old SP model and would have to change.
+
+4. STIG source-of-truth gap. DISA has NOT published a STIG for SLES 16 (only 12 and
+   15). Check whether the repo's SUSE STIG content keys off a DISA benchmark / SSG
+   XML or the GPOS SRG. Then lay out the options to take to Ram — adapt the SLES 15
+   controls to 16, harden against the GPOS SRG, or wait for DISA — and what each
+   would mean concretely in this codebase.
+
+Output: a concise briefing with exact file paths, the quoted gates/path logic, a gap
+list, and the open questions for Steve and Ram. No code changes, no proposals to
+implement — reconnaissance only.
