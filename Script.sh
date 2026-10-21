@@ -1,18 +1,24 @@
-Next: author the SLES 16 FIPS task files, per the settled direction in the project memory.
+Time to start authoring the FIPS tasks for SLES 16. The research is done, the
+harden.yml unblock is committed, and the direction is settled: model on SP6, create
+the sles/16/sp0 task directory, and use vendor docs as the source of truth.
 
-Create fips/tasks/sles/16/sp0/{check,enable,disable}-fips.yml. Do NOT touch the
-path formula in fips/tasks/main.yml.
+Key facts you already found:
+- SLES 16 ships GRUB 2.12 (not systemd-boot), so grub tasks carry over
+- fips-mode-setup exists on 16, which might simplify the enable task vs SP6's
+  hand-rolled sequence
+- libopenssl-3-fips-provider is the right FIPS package, same as SP6
+- No official SLES 16 FIPS guide exists yet, so we're working from SP7 docs + Leap
+  16 package evidence
 
-- check-fips.yml: same sysctl crypto.fips_enabled check as SP6.
-- enable-fips.yml: model on SP6 (libopenssl-3-fips-provider, update-crypto-policies
-  --set FIPS, fips=1 via both GRUB keys, grub2-mkconfig, dracut --add fips).
-  Keep the structure close to SP6 so reviewers can diff the two easily. Use
-  patterns-base-fips as the 16 pattern name and keep failed_when: false where SP6
-  has it. Add a short comment on each task I haven't verified on a live 16 build
-  (openssl.cnf provider wiring, EFI grub path, update-bootloader).
-- disable-fips.yml: use fips-mode-setup --disable, since it exists on 16.
+What I need:
+Build the check, enable, and disable FIPS task files for SLES 16 under
+sles/16/sp0/. Use the SP6 tasks as your starting point, but don't blindly copy —
+cross-check against the SUSE vendor docs and the actual 16 package names to make
+sure everything is correct for 16. If something looks different or uncertain, flag
+it rather than guessing.
 
-Constraints: keep SLES 15 behaviour unchanged, add nothing security-weakening, and
-don't push. Show me the full diff, plus a short list of every assumption that's
-inferred from SLES 15 / Leap 16 rather than documented for SLES 16, and wait for my
-OK before committing.
+Also do a broader check from your side — if there's anything else in the fips role
+that assumes SLES 15 behavior or needs adjusting for 16 (vars, defaults, conditionals,
+templates), call it out. I'd rather catch it now than on a failed build.
+
+Show me the full diff before committing. Nothing gets pushed without my review.
