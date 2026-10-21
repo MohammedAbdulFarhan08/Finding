@@ -1,17 +1,26 @@
-SLES 16 now builds through the full base layer on aws-com. All work is on branch c5425849-sles16 (packer, roles, infrastructure) and validated build by build.
+I'm working on SLES 16 FIPS enablement for the golden images (SCSEC-8697, branch
+c5425849-sles16). Steve has told me to comment out the hardening/STIG roles so the
+build can get past them, and focus on getting FIPS working for 16.
 
-Done:
+Two things to do:
 
-Install: SLES 16 replaced AutoYaST with the Agama installer, so the boot command, install profile and network setup were reworked (NetworkManager DHCP, since wicked is gone in 16).
-repository-management: the role was hardcoded to the SLES 15 service-pack layout. I de-hardcoded it for 16’s no-SP structure and it now resolves the SLES 16 Pool repos on CDN2. SLES 15 SP5/SP6/SP7 repo output is byte-identical before and after.
-Base role: added the SLES 16 OS vars/tasks and adapted for the minimal install: sudoers (moved to /usr/etc in 16, secure_path delivered via the sudoers.d drop-in), cron (not shipped on 16 minimal, needed for logrotate/aide), clamav-nextgen SLES 16 vars, and the legacy wicked ifcfg task (skipped on 16). Scoped so SLES 15, RHEL and Ubuntu behavior is unchanged.
-Image-lists: SLES 16 rows added to my test list and the pre-release lists.
+1. PIPELINE UNBLOCK — In ansible/playbooks/harden.yml, find the SUSE DISA STIG block
+   (the one gated on ansible_os_family | lower == 'suse', around line 248-270). I need
+   to comment it out on my branch so builds get past hardening. DON'T touch
+   base-configure.yml — that one is already correctly version-gated. Also comment out
+   any other hardening role calls that would fail on 16 for the same reason. Show me
+   the diff before committing.
 
-Open / next:
+2. FIPS RESEARCH (read-only) — Before writing any FIPS tasks:
+   - Search the SUSE documentation for how FIPS 140 is enabled on SLES 16. Key things
+     I need to know: is it still fips-mode-setup, or is there a new method? Does it
+     use the openssl 3 provider model (libopenssl-3-fips-provider)? What's the
+     bootloader situation — grub2-mkconfig or sdbootutil/systemd-boot?
+   - Then read the existing fips role in the repo, specifically the SP6 enable-fips.yml
+     (fips/tasks/sles/15/sp6/enable-fips.yml) since that's the closest model — it
+     already uses libopenssl-3-fips-provider.
+   - Compare vendor docs against SP6 tasks and give me a gap list: what carries over,
+     what breaks, what's unknown.
 
-aws-cloudwatch-agent needs collectd, which is PackageHub-only on 16. PackageHub is being enabled on the repo-sync side.
-Updates/16.0 isn’t mirrored to CDN2 yet (Pool only), so the image installs but can’t patch past GA until it lands.
-FIPS and the DISA STIG role are next. I did a read-only pass through the repos: the SUSE STIG block in harden.yml is only gated on OS family, so it fires on 16 too, and the fips role builds a sles/16/sp0 path that doesn’t exist (16 uses the OpenSSL-3 provider model). Neither is a straight copy of 15, and DISA hasn’t published a STIG for SLES 16 yet. Planning both with Steve and Ram.
-Only aws-com built so far, other clouds to follow.
-
-MRs are held pending the release flow.
+Do step 1 first (show diff, wait for my ok to commit). Then do step 2 as a research
+output — no file changes, just the findings.
