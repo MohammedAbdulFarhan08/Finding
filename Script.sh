@@ -1,36 +1,29 @@
-New priority ticket STOI-14182 — production bug on Azure RHEL 9.6 HANA and Sapapp
-golden images. Time sync is broken. Prioritized over SLES 16 work.
+Confirm build-time startability for the chrony fix — this is the one thing that gates
+the fix design before I write any template change.
 
-Ticket details:
-- Affected images: Golden-SCS-RHEL-9.6-HANA-V2026-04-16-1527 and
-  Golden-SCS-RHEL-9.6-SAPAPP-V2026-04-16-1527
-- Platform: Azure Government, Commercial Regulated (CRE)
-- Bug: /etc/chrony.conf is missing NTP configuration. "chronyc sources -v" returns
-  empty. Missing lines:
-    refclock PHC /dev/ptp0 poll 3 dpoll -2 offset 0
-    makestep 1.0 -1
-    sourcedir /run/chrony-dhcp
-- Reporter says chrony-configure-standalone.yml in shared/ansible/playbooks fixes it
-  manually
-- Environment: Dev, PreProd, Stage, Production — all affected
+The question: on an Azure QEMU build, if the chrony template bakes in the refclock
+(refclock PHC /dev/ptp0 ...) plus sourcedir /run/chrony-dhcp, does chronyd start
+cleanly even though /dev/ptp0 doesn't exist in the QEMU environment? The chrony role's
+restart handler is a bare "state: restarted" that will fail the whole build if chronyd
+won't come up. That exact failure mode is why the Azure refclock was gated off in the
+first place (changelog 2.9-000014, "Azure NTP source breaks QEMU builds"), so I need
+to know we won't recreate it.
 
-READ-ONLY investigation. Read from origin/main — don't create any branches or edit
-any files yet. I need to understand:
+Figure out:
+1. Does chronyd tolerate a missing refclock device at startup (warn + continue), or
+   does it hard-fail? Check chrony's actual behavior with a non-existent PHC device
+   plus a valid sourcedir fallback. If you can verify it in a real QEMU build rather
+   than just reasoning about it, do that — a live confirmation is worth more here than
+   docs since this is production time sync.
+2. If there's any risk it hard-fails, what's the safe shape — rely on sourcedir
+   /run/chrony-dhcp as the startable source, make the restart handler tolerant, or
+   something else — so the build stays green while the refclock is still baked for
+   runtime.
 
-1. How does chrony get configured in our golden image build pipeline? Find the chrony
-   role or chrony tasks in the roles and playbooks repos. What does the build write to
-   /etc/chrony.conf, and is it cloud-provider aware (AWS vs Azure vs GCP)?
+Also, separately: who introduced the 2.9-000014 change and when? Check the git blame /
+commit history and CHANGELOG-SCS.md for that entry — I want the author and the commit
+message so I can loop them in if needed, since they hit this QEMU-vs-Azure problem
+before and may have context on what they tried.
 
-2. Read chrony-configure-standalone.yml in shared/ansible/playbooks — the reporter
-   says this fixes it. What does it do differently from the build pipeline? Why would
-   it work as a manual fix but not be in the build?
-
-3. Why Azure specifically? Azure uses /dev/ptp0 as the hypervisor time source, not
-   the AWS 169.254.169.123 NTP endpoint. Is the build pipeline handling this
-   difference?
-
-4. Is there anything HANA/SAP-specific in the chrony setup that could explain why
-   these particular images are affected?
-
-Give me root cause, blast radius (which other images might have the same issue), and
-the fix shape before I touch anything.
+Read-only — don't write the fix yet. Report startability findings + the 2.9-000014
+author, then we'll plan the template change.
