@@ -1,24 +1,36 @@
-Time to start authoring the FIPS tasks for SLES 16. The research is done, the
-harden.yml unblock is committed, and the direction is settled: model on SP6, create
-the sles/16/sp0 task directory, and use vendor docs as the source of truth.
+New priority ticket STOI-14182 — production bug on Azure RHEL 9.6 HANA and Sapapp
+golden images. Time sync is broken. Prioritized over SLES 16 work.
 
-Key facts you already found:
-- SLES 16 ships GRUB 2.12 (not systemd-boot), so grub tasks carry over
-- fips-mode-setup exists on 16, which might simplify the enable task vs SP6's
-  hand-rolled sequence
-- libopenssl-3-fips-provider is the right FIPS package, same as SP6
-- No official SLES 16 FIPS guide exists yet, so we're working from SP7 docs + Leap
-  16 package evidence
+Ticket details:
+- Affected images: Golden-SCS-RHEL-9.6-HANA-V2026-04-16-1527 and
+  Golden-SCS-RHEL-9.6-SAPAPP-V2026-04-16-1527
+- Platform: Azure Government, Commercial Regulated (CRE)
+- Bug: /etc/chrony.conf is missing NTP configuration. "chronyc sources -v" returns
+  empty. Missing lines:
+    refclock PHC /dev/ptp0 poll 3 dpoll -2 offset 0
+    makestep 1.0 -1
+    sourcedir /run/chrony-dhcp
+- Reporter says chrony-configure-standalone.yml in shared/ansible/playbooks fixes it
+  manually
+- Environment: Dev, PreProd, Stage, Production — all affected
 
-What I need:
-Build the check, enable, and disable FIPS task files for SLES 16 under
-sles/16/sp0/. Use the SP6 tasks as your starting point, but don't blindly copy —
-cross-check against the SUSE vendor docs and the actual 16 package names to make
-sure everything is correct for 16. If something looks different or uncertain, flag
-it rather than guessing.
+READ-ONLY investigation. Read from origin/main — don't create any branches or edit
+any files yet. I need to understand:
 
-Also do a broader check from your side — if there's anything else in the fips role
-that assumes SLES 15 behavior or needs adjusting for 16 (vars, defaults, conditionals,
-templates), call it out. I'd rather catch it now than on a failed build.
+1. How does chrony get configured in our golden image build pipeline? Find the chrony
+   role or chrony tasks in the roles and playbooks repos. What does the build write to
+   /etc/chrony.conf, and is it cloud-provider aware (AWS vs Azure vs GCP)?
 
-Show me the full diff before committing. Nothing gets pushed without my review.
+2. Read chrony-configure-standalone.yml in shared/ansible/playbooks — the reporter
+   says this fixes it. What does it do differently from the build pipeline? Why would
+   it work as a manual fix but not be in the build?
+
+3. Why Azure specifically? Azure uses /dev/ptp0 as the hypervisor time source, not
+   the AWS 169.254.169.123 NTP endpoint. Is the build pipeline handling this
+   difference?
+
+4. Is there anything HANA/SAP-specific in the chrony setup that could explain why
+   these particular images are affected?
+
+Give me root cause, blast radius (which other images might have the same issue), and
+the fix shape before I touch anything.
