@@ -1,12 +1,14 @@
-Steve's good with the plan. Draft the fix on the c5425849-chrony branch, two parts:
-1. Build-time: keep chrony.conf startable on Azure — no refclock (plain server/pool or
-   sourcedir is fine), so the build doesn't hit the 2.9-000014 fatal.
-2. First-boot runtime: apply the Azure PHC refclock when /dev/ptp0 exists, mirroring
-   what chrony-configure-standalone.yml already does (append refclock + makestep 1.0 -1,
-   preserve stock sourcedir /run/chrony-dhcp, restart chronyd). Read that playbook first
-   and base the logic on it since it's proven on live Azure.
+Ready for the Gov/CRE verification — I have Azure Gov/CRE deploy access. The 9.6 HANA
+golden image is already built on the c5425849-chrony branch. This is a deploy-and-boot
+test, not a pipeline build.
 
-Use a baked systemd oneshot for the first-boot trigger unless you find the repo has an
-established cloud-init pattern for this kind of thing — if so, flag it and I'll decide.
-Show me the diff before committing. Don't raise an MR — MRs are held pending the release
-flow.
+Walk me through / set up: deploy a VM from the 9.6 HANA golden image on Azure Gov/CRE,
+boot it, then verify inside the VM:
+1. the first-boot oneshot (chrony-azure-phc.service) ran — check systemctl status and
+   the journal
+2. /etc/chrony.conf ends up with refclock PHC /dev/ptp0, makestep 1.0 -1, and
+   sourcedir /run/chrony-dhcp
+3. chronyc sources -v is populated (not empty — that was the reported symptom)
+
+Give me the exact deploy commands and the in-VM verify commands. Confirm which Gov/CRE
+image identifier / resource group to deploy from first — don't guess it.
