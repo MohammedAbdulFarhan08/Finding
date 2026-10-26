@@ -1,11 +1,9 @@
-New ticket, STOI-12284. Investigate first, don't change anything yet, and give me a plan before you touch any repo.
+Good analysis. Before picking an option, do two things in this order:
 
-The problem: hardened CDN2 Ubuntu 22.04 golden images (Golden-CDN2-SCS-Ubuntu-22.04-Base) kernel-panic with out-of-memory when patched on small-RAM instances. On a t3.small (2GB) and t3.medium (4GB) the OS update reliably OOMs and the kernel panics ("System is deadlocked on memory"); a t3.large (8GB) completes patching fine. The reporter ran only the repository-management play to attach CDN2 repos, then apt-get update && apt upgrade -y. The OOM kill list from their logs shows the usual hardening/monitoring stack resident at update time — amazon-cloudwatch-agent, amazon-ssm-agent, snapd, collectd, packagekit, polkitd, unattended-upgrades, plus the kernel/initramfs unpack for a new FIPS kernel (5.15.0-186-fips) running at the same time.
+1. Run the live 2-minute check now on a fresh CDN2 Ubuntu 22.04 instance: confirm swap state, confirm whether the FIPS kernel ships the zram module (systemd-zram-generator dependency), and confirm whether apt-daily-upgrade.timer / unattended-upgrades.service is active and racing a manual apt upgrade. Report actual results, not expectations.
 
-What I need from you, in order:
-1. Confirm the shape of the problem: is this memory pressure from the combination of (a) the hardened image's always-on agents/services plus (b) apt unpacking a new kernel + headers + initramfs rebuild, all with no swap? Check whether these base images ship with any swap configured at all, and whether initramfs/dpkg peaks are what tips a 2-4GB box over.
-2. Scope it: is this specific to CDN2 Ubuntu 22.04, or do our other Ubuntu / FIPS images have the same no-swap + heavy-agent profile? Is it one cloud or everywhere? I need this answer for John.
-3. Lay out the realistic options with trade-offs, e.g.: adding a small swapfile (or zram) in the base image or via the repo-management/base role; trimming or deferring agents during patching; documenting a minimum instance size. For each, tell me the blast radius across other OSes and clouds, since anything in a shared role touches everyone.
-4. Tell me honestly whether this is fixable on our side at all, or whether the real answer is "needs >=8GB / we document a minimum." John's call was: fix it if we can, and if we can't, write up exactly why so we can tell the requester.
+2. Separately, search our InSpec/STIG control suite for any control that asserts swap is disabled or that /swapfile / swap partitions must not exist. I need to know if adding swap would red the scan the way the chrony refclock control did. This decides whether this is a one-MR or a bundled roles+InSpec change.
 
-Don't edit any repo or run anything destructive. Investigate against the image/role code and the logs, then come back with findings + options. I'll pick a direction before any change.
+On the swap-valve choice itself, I'm leaning A (gated disk swapfile) over B (zram), not B — because on the 2GB case zram consumes the RAM that's already exhausted during the initramfs unpack, whereas a disk swapfile gives the kernel somewhere genuinely separate to evict to. Argue me out of it if the live check shows otherwise, but default to a disk swapfile.
+
+Whatever we add must be gated to exclude the presets that deliberately disable swap (chost / gardener-shoot / kubernetes). Don't change anything yet — come back with the check results and the InSpec answer, then I'll approve a direction.
