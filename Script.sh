@@ -1,5 +1,7 @@
-Go with option 1 — green-light the monitored reproduction. It's a disposable instance, force-stop/start recovers it, and I want the race confirmed rather than inferred.
+Yes, draft the STOI-12284 update for John. Lead with the headline that we could not reproduce the OOM — a properly-swapped 2GB box patches the reporter's exact package set in ~7 min with >1GB free, and both our hypotheses (no swap in image / concurrent-apt race) are refuted by live evidence, with the swap figures and the dpkg-lock mechanism as proof.
 
-Log whatever you need (free/swapon/process state over time) and make sure you come out of it with clear evidence of whether two concurrent apt/dpkg + initramfs runs are what tips it over — that's going into the ticket for John. Then terminate the instance.
+Then the conclusion: the image ships and boots with 3.8GB active swap, so there's no fix to make on our side — the only thing consistent with the reporter's failure is that their specific instance had no active swap. 
 
-Assuming it confirms: propose the fix that makes the apt-daily/unattended-upgrades mask actually persist into the shipped image, with the blast radius. Don't commit anything — show me the change and the repro evidence and I'll approve. If the repro somehow doesn't confirm the race, stop and tell me rather than hunting further.
+Then the two asks for the requester: swapon --summary / free -h from the failing box (or its serial console), and confirmation it was the unmodified AMI with no custom launch (root-volume resize, user-data, re-bundled/older image, non-default block device mapping — anything that could drop the baked /swap.img).
+
+Keep it factual and ready for John to read or paste to the requester. Mention the unattended-upgrades mask not persisting as a one-line side note only — flag it's not the cause and worth a separate minor-hygiene ticket. Don't frame the whole thing around it.
