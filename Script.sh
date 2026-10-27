@@ -1,11 +1,11 @@
-SLES 16 (SCSEC-8697) Read-only status pass, change nothing.
+Confirmed !305 is Ram's Q3 STIG review, not his SLES 16 refactor — so his 16 work hasn't started and I'm not waiting on it. Let's do everything that's independent of him. Nothing moves until I approve each step, read-only where it's investigation.
 
-1. Ram raised STIG MR !305. Read it. Tell me: does it add a SLES 16 STIG role, or only refactor the existing RHEL / SLES-15 roles into his new format? If it adds a sles16 path, how does harden.yml wire it in, and does that collide with my commented-out SLES-15 STIG block and version-guarded audit block on branch c5425849-sles16? I need to know if my harden.yml changes now need reconciling with his.
+Green-lit, in this order:
+1. Rebuild on the current rebased roles (552e2e8) to bank the #1/#2 InSpec clears and re-confirm FIPS + harden still go end-to-end. Force-check the roles git resource first.
+2. Rebase packer onto origin/main — show me the reconciled region in the 4 golden.pkr.hcl (my Agama http_content vs main's QEMU-build-host provisioner) before pushing.
+3. Rebase roles + playbooks + infra onto main (trivial per your read) — flag anything unexpected.
+4. harden.yml pre-MR fix: bring my commented-out SLES-15 STIG block back as a major=='15'-gated invocation so SLES 15 keeps STIG and only 16 skips. Show me the diff.
+5. InSpec #3-4 in inspec-image-tests: write the sudoers path-resolve fix. For logrotate, FIRST do the CDN2 RPM-extract check to confirm whether SLES 16 ships logrotate.conf at /usr/etc or ships none — if none, the fix goes in the base role, not InSpec. Tell me which before writing it.
+6. Triage #8 (sles16_sp0.repo <500B): real missing-repo gap or just 16-has-fewer-repos? Recommend relax-threshold or not.
 
-2. Across all four repos on branch c5425849-sles16, how far behind origin/main is each now that 202610A merged, and would a rebase conflict anywhere (sshd_config copy task and harden.yml are the likely spots)?
-
-3. What's still test-only and must come out before any MR (the 3 collectd guards, the infra packer pointer 7656340, the test_c5425849_build.yml pointers) — give me the exact MR-ready commit set after cleanup, including the packer 5→1 squash.
-
-4. Of the 8 InSpec failures from build #22, which are still open after the rebase, and what would the /usr/etc sudoers + logrotate fix look like in the inspec-image-tests repo.
-
-Then propose an order of operations and I'll approve before anything moves. Don't touch STIG — that's Ram's; flag anything that needs a word with him or Steve.
+Leave #6-7 (aide/maxlogins) alone — deferred to Ram's future SLES 16 STIG. Leave the collectd guard removal for when Steve's mirror lands. Don't open any MR. Give me the proposed commit set after all this and I'll review before anything's raised.
