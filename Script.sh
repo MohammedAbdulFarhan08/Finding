@@ -1,10 +1,7 @@
-The /jira-log and /jira-backfill commands are global (~/.claude/commands), but the
-sap-jira MCP they depend on isn't available in every session — it's registered at the
-default local scope, so it only loads in the directory where we built and tested this.
-These commands are meant to run from any session.
-
-Check the current scope with `claude mcp get sap-jira`, then re-register the Jira MCP
-at user scope so it's available in all my sessions regardless of working directory.
-Keep the exact same endpoint and config — don't change anything else. Tell me whether
-I need to re-authenticate afterward and walk me through it if so. Don't improvise any
-Jira write in the meantime.
+In my VS Code Claude session, /mcp shows only plugin:playwright:playwright (Failed)
+and no sap-jira — but here in the terminal, sap-jira is user-scoped and connected.
+Both should share ~/.claude.json. Figure out why the VS Code session can't see the
+user-scoped sap-jira server: confirm which config each is reading, whether they're the
+same Claude Code install/version, and whether anything is overriding MCP config for
+the VS Code workspace. Tell me what you find and the fix — don't change anything or
+touch Jira until I approve.
