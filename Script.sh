@@ -1,7 +1,11 @@
-Keep the raw evidence blocks separate from the reporter-facing comment, don't fold all six into it.
+SLES 16 (SCSEC-8697) Read-only status pass, change nothing.
 
-Give me two things:
-1. A short reporter-facing ticket comment for STOI-12284, tagging David McGregor: leads with the two asks (swapon --summary + free -h from the failing box, and confirmation it was the unmodified AMI with no custom launch settings), then a brief "here's why we're asking" — we reproduced your exact setup on a 2GB box and it patched clean, and the image ships 3.8GB active swap. Inline at most the swapon output and the clean-completion line. Keep it tight and non-accusatory.
-2. The full six-block evidence as a separate "Full test evidence" block I can hand John or drop lower in the ticket.
+1. Ram raised STIG MR !305. Read it. Tell me: does it add a SLES 16 STIG role, or only refactor the existing RHEL / SLES-15 roles into his new format? If it adds a sles16 path, how does harden.yml wire it in, and does that collide with my commented-out SLES-15 STIG block and version-guarded audit block on branch c5425849-sles16? I need to know if my harden.yml changes now need reconciling with his.
 
-Apply your own caveats: drop any "new kernel installed" claim (you didn't capture it — APT_EXIT=0 is the real claim), and mark the instance IDs as terminated. Don't change anything in a repo.
+2. Across all four repos on branch c5425849-sles16, how far behind origin/main is each now that 202610A merged, and would a rebase conflict anywhere (sshd_config copy task and harden.yml are the likely spots)?
+
+3. What's still test-only and must come out before any MR (the 3 collectd guards, the infra packer pointer 7656340, the test_c5425849_build.yml pointers) — give me the exact MR-ready commit set after cleanup, including the packer 5→1 squash.
+
+4. Of the 8 InSpec failures from build #22, which are still open after the rebase, and what would the /usr/etc sudoers + logrotate fix look like in the inspec-image-tests repo.
+
+Then propose an order of operations and I'll approve before anything moves. Don't touch STIG — that's Ram's; flag anything that needs a word with him or Steve.
