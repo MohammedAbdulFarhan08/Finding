@@ -1,9 +1,4 @@
-Before I test and MR the Fabric Manager fix, I want to know the full blast radius — am I fixing everything that needs it, or just Ubuntu Gardener-Nvidia? Read-only, change nothing. Tell me:
-
-1. Every golden image across ALL OSes and variants that installs NVIDIA anything (driver, fabricmanager, cuda, nscq) — grep packer and all roles for nvidia/cuda/fabricmanager. List each image name and which task/preset installs it.
-2. For each: does it already go through the base/tasks/products/nvidia.yml task I just edited (so it's covered by my fix), or does it have its own separate NVIDIA install path (so it's NOT covered)?
-3. Specifically confirm whether Golden-Metal-CDN2-SCS-Ubuntu-24.04-Gardener-Nvidia (the metal variant named in the ticket) shares my edited task or has its own.
-4. Confirm the SLES Gardener-Nvidia situation — you said it installs no driver at all. Which images, what preset, and roughly what a SLES driver+FM install path would take (so I can size the separate ticket).
-5. Any NVIDIA on RHEL or any other OS family, or is it Ubuntu/SLES only?
-
-Just the inventory and what's covered vs not. I'll decide scope from there.
+On the chrony ticket (STOI-14182) the reporter Chris Wiley is asking which Golden RHEL image version the fix shipped in. Read-only. The roles + InSpec MRs merged to main yesterday. Tell me:
+1. Has a fresh Golden-CDN2-SCS-RHEL-9.6 image (HANA/Sapapp, the Azure ones from the ticket) built from main SINCE the merge? If yes, give me the exact image version string(s) (the V2026-MM-DD-HHMM stamp).
+2. If no build has run from main yet, when's the next one that would produce that image (3-day cadence vs monthly), so I can tell him when to expect it.
+Just the facts, I'm answering the reporter.
