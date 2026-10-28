@@ -1,5 +1,9 @@
-Driver version: decide after mirror check.
-Mirror check: yes, query the mirror (apt-cache madison on jammy + noble, read-only) for driver/fabricmanager/nscq at both 535.288.01 and 580.196.07.
-Scope: Ubuntu 22.04 + 24.04 together now (shared preset, and I need 24's driver for the comparison anyway). Hold SLES as a separate follow-up — it's a different zypper path and John wasn't sure it's in scope for this ticket. Still verify whether Gardener-Shoot pulls NVIDIA, but don't change it.
+Before I test and MR the Fabric Manager fix, I want to know the full blast radius — am I fixing everything that needs it, or just Ubuntu Gardener-Nvidia? Read-only, change nothing. Tell me:
 
-After the mirror check, come back with: what each image ships today (22 vs 24 driver), what resolves on the mirror, and your recommended driver line (keep 535 + add FM, or point them at 24) — I'll pick before any change.
+1. Every golden image across ALL OSes and variants that installs NVIDIA anything (driver, fabricmanager, cuda, nscq) — grep packer and all roles for nvidia/cuda/fabricmanager. List each image name and which task/preset installs it.
+2. For each: does it already go through the base/tasks/products/nvidia.yml task I just edited (so it's covered by my fix), or does it have its own separate NVIDIA install path (so it's NOT covered)?
+3. Specifically confirm whether Golden-Metal-CDN2-SCS-Ubuntu-24.04-Gardener-Nvidia (the metal variant named in the ticket) shares my edited task or has its own.
+4. Confirm the SLES Gardener-Nvidia situation — you said it installs no driver at all. Which images, what preset, and roughly what a SLES driver+FM install path would take (so I can size the separate ticket).
+5. Any NVIDIA on RHEL or any other OS family, or is it Ubuntu/SLES only?
+
+Just the inventory and what's covered vs not. I'll decide scope from there.
