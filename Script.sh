@@ -1,4 +1,1 @@
-On the chrony ticket (STOI-14182) the reporter Chris Wiley is asking which Golden RHEL image version the fix shipped in. Read-only. The roles + InSpec MRs merged to main yesterday. Tell me:
-1. Has a fresh Golden-CDN2-SCS-RHEL-9.6 image (HANA/Sapapp, the Azure ones from the ticket) built from main SINCE the merge? If yes, give me the exact image version string(s) (the V2026-MM-DD-HHMM stamp).
-2. If no build has run from main yet, when's the next one that would produce that image (3-day cadence vs monthly), so I can tell him when to expect it.
-Just the facts, I'm answering the reporter.
+Chris Wiley is asking which image version the chrony fix (STOI-14182) landed in. The roles fix merged to main — I need to know the first Azure RHEL 9.6 HANA/Sapapp image version that actually contains it. Can you check: has a pre-release or release build of the Azure RHEL 9.6 HANA + Sapapp images run since the chrony MRs merged, and if so what's the image version (the V-date stamp / release tag)? If no build has run yet, tell me when the next one is expected so I can tell him when to look for it. Read-only, just need the version answer.
