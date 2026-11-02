@@ -1,35 +1,44 @@
-Context: SCSEC-8697, SLES 16 enablement. InSpec on the latest SLES 16 build (#25, or newer if 
-the rebased validation build has finished) fails the apparmor-status control. SLES 16 is 
-believed to ship SELinux by default instead of AppArmor. Before I ask Steve for a decision I 
-need the facts nailed down. Read-only: NO builds, commits, or pushes. Evidence for every 
-claim; if something can't be confirmed from the repo or build output, say so instead of 
-assuming.
+Context: SCSEC-8697, SLES 16. Steve (team lead) decided: follow SUSE's vendor default for 
+the MAC framework. SUSE's position, per SUSE's own SLES 16 docs/blogs: SELinux replaces 
+AppArmor, ships ENFORCING by default in plain SLES 16 with the targeted policy, and PERMISSIVE 
+in the SLES for SAP variant. (Sources: suse.com/c/what-is-new-in-suse-linux-enterprise-server-16-0 
+and suse.com/c/sle-16-and-the-public-cloud. Verify against SUSE docs if you can reach them; 
+if not, say you couldn't.) 
 
-1. THE CONTROL: in inspec-image-tests, find the apparmor-status control. Give the file path, 
-   exactly what it asserts (package installed? service active? profiles loaded/enforcing?), 
-   and how it's gated per OS (is there any SLES 15 vs 16 conditional today?). Quote the exact 
-   failure message from the SLES 16 InSpec output.
+STRICT RULES: read-only. Do NOT commit, push, edit any file, or trigger any build. Everything 
+below is investigation plus DRAFTS shown as text for my approval. Evidence for every claim; 
+if something can't be confirmed from the repos or build output, say so rather than assuming.
 
-2. WHAT SLES 16 ACTUALLY HAS: from the build logs / InSpec output / package lists / Agama 
-   profile for the SLES 16 image, determine: is SELinux installed, and in what mode 
-   (enforcing / permissive / disabled)? Is AppArmor absent or just inactive? If the build 
-   artifacts can't show this, say what would (e.g. a getenforce / sestatus check on a booted 
-   image) rather than guessing.
+1. WHICH PRODUCT(S): which SLES 16 variants do our images target: plain SLES, SLES for SAP, 
+   or both (check the pkrvars/image-lists/roles for any SAP-specific variant)? This matters 
+   because vendor default is enforcing for plain and permissive for SAP, so a single 
+   "assert enforcing" check could be wrong for SAP images.
 
-3. HOW OUR ROLES TREAT IT: in the roles repo, how is AppArmor handled for SLES 15 (installed / 
-   enabled by a role?), and is there anything on 16 for SELinux or AppArmor (tasks, 
-   harden.yml guards, FIPS/STIG roles that assume one or the other)? List every file/line.
+2. WHAT THE IMAGE ACTUALLY HAS (the unknown): the earlier report couldn't tell if 
+   selinux-policy / policycoreutils are installed on the final image or what mode it boots in. 
+   Check what we can from the Agama profile, package patterns, and build #26 logs. Then DRAFT 
+   (do not apply) a small read-only diagnostic to run on the booted instance during the 
+   InSpec stage, modeled on the device-node debug dump we used for the NVIDIA work: print 
+   getenforce, sestatus, rpm -q selinux-policy-targeted selinux-policy policycoreutils, 
+   /etc/selinux/config, and the kernel cmdline (security=/selinux= args). Also include an AVC 
+   denial check (ausearch -m avc -ts boot, or journalctl equivalent) so we can see whether 
+   enforcing is already blocking any of our agents. Show me exactly where it would hook in and 
+   how it would be output.
 
-4. EXISTING PATTERN: does inspec-image-tests already have an SELinux control for RHEL? Show 
-   it, since that's the pattern to reuse if we add one for SLES 16.
+3. AGENT RISK: if the image is or becomes enforcing, list the agents/services we install on 
+   16 that could hit SELinux denials (nessus-agent, clamav, aws-cloudwatch-agent, chrony, 
+   sshd drop-ins, FIPS-related), and what in the repo already accounts for SELinux, if anything.
 
-5. STIG/SSG CONTENT: if any SLES 16 STIG / SCAP / OpenSCAP profile content exists in the repos, 
-   does it require SELinux or AppArmor on SLES 16? If it isn't in the repos, say 
-   "not determinable here".
+4. INSPEC CHANGE (draft only): 
+   (a) gate apparmor-status off SLES 16, and confirm what os.release actually returns on SLES 
+       16 under InSpec (is start_with?('16') correct?). 
+   (b) draft the SELinux control for 16 modeled on the existing RHEL selinux-state control. 
+       Propose what it should assert (getenforce exit 0 only, vs enforcing) and how to handle 
+       the SAP/permissive case, but do NOT assume enforcing until step 2 evidence exists.
 
-6. OPTIONS, no changes made: describe (a) adding a SELinux check for 16 (exact files and 
-   rough size of change) and (b) skipping the apparmor control on 16 (how exemptions or OS 
-   gating are done elsewhere in this repo, with an example). Give a recommendation with 
-   reasoning, and flag any risk in either.
+5. ROLE WORK, IF NEEDED: if step 2 shows the image is NOT enforcing (policy missing or 
+   permissive), describe what a roles change would involve to match the vendor default 
+   (install policy, set enforcing, relabel/first-boot considerations), as an outline only.
 
-Summary at the end: one paragraph I can use to ask my team lead for a decision.
+Finish with: what's confirmed, what's still unknown, and the smallest next action you'd 
+recommend. Wait for my approval before touching anything.
