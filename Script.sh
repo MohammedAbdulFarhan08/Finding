@@ -1,28 +1,15 @@
-Good plan overall. Two amendments, then proceed on your own judgment — you don't need to 
-gate every step on me. Work through it, and only stop if you hit a genuine fork or a decision 
-you can't make from the context you have.
+Apply Change A — but first add /etc/default/grub to a quick read-only diagnostic and show me 
+the ACTUAL GRUB_CMDLINE_LINUX_DEFAULT line. I don't want to apply a boot-critical regex against 
+a derived line when we can see the real one. If it matches the shape you assumed, apply A.
 
-ONE hard stop though: the grub cmdline edit. Before you APPLY any change to 
-GRUB_CMDLINE_LINUX_DEFAULT / base/tasks/grub.yml, show me the actual current line from the 
-built image and the exact before/after diff, and wait for my ok. That's the one file where 
-wrong = unbootable, so I want eyes on it. Everything else — packages, /etc/selinux/config, 
-the first-boot oneshot, restorecon, the InSpec changes — just do it; the validation build 
-will catch mistakes.
+Change B: go with B1 (root-cause, order-independent) — NOT B2. But do it as a SEPARATE commit 
+AFTER A is validated. A ships and proves it boots + enforces first; B1 (shared FIPS grub task) 
+comes after, on its own. The dup is kernel-tolerated, it can wait one build.
 
-Amendments:
-1. SPLIT grub dedup from the SELinux change — two separate diffs: Change A (SELinux enabling, 
-   incl. adding selinux=1 idempotently) and Change B (the fips=1 dedup in shared grub.yml), so 
-   if a build won't boot I know which one did it.
-2. Make every cmdline edit idempotent for real (a when: or non-double-appending regexp, not a 
-   comment) so nothing re-introduces a dup.
+On the dropped first-boot oneshot / live-flip-late approach: fine, but it means "nothing runs 
+under enforcing" now depends on the flip being genuinely the last step before InSpec. So the 
+validation must prove nothing hardening-related runs after the flip, AND the SSH hard gate 
+stands: getenforce=Enforcing, relabel done, zero AVCs against sshd/chronyd/clamav/nessus/cwa/ssm, 
+and SSH actually connects with sshd reading 10-scs-hardening.conf. No SSH proof = not a pass.
 
-For Change B, spell out the ordering vs the FIPS playbook (it runs later and also writes both 
-grub keys) so the dedup doesn't get undone, and say whether it's fragile if someone reorders 
-playbooks later.
-
-VALIDATION — SSH is a hard gate. The enforcing build must prove: getenforce=Enforcing; relabel 
-done; zero AVC denials against sshd/chronyd/clamav/nessus/cwa/ssm; AND SSH actually connects 
-with sshd able to read /etc/ssh/sshd_config.d/10-scs-hardening.conf. A mislabeled sshd drop-in 
-under enforcing = lockout, which a passing InSpec would miss. No SSH proof = not a pass.
-
-Build it. Stop only for the grub cmdline diff and any real fork.
+Show me the real grub line, then proceed.
