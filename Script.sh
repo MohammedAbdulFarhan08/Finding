@@ -1,15 +1,14 @@
-Apply Change A — but first add /etc/default/grub to a quick read-only diagnostic and show me 
-the ACTUAL GRUB_CMDLINE_LINUX_DEFAULT line. I don't want to apply a boot-critical regex against 
-a derived line when we can see the real one. If it matches the shape you assumed, apply A.
+Approved — go with the revised Change A: replace the empty security= with 
+"security=selinux selinux=1" (explicit LSM, not blank — safer with FIPS on the line and 
+self-documenting). Confirmed the regex assumes security= is the last token, which your real 
+line shows it is; just make sure nothing in a later task appends after security= before this 
+runs.
 
-Change B: go with B1 (root-cause, order-independent) — NOT B2. But do it as a SEPARATE commit 
-AFTER A is validated. A ships and proves it boots + enforces first; B1 (shared FIPS grub task) 
-comes after, on its own. The dup is kernel-tolerated, it can wait one build.
+Change B: agreed, it's moot — no base dup to fix. Don't do it. If you want, re-check the 
+post-FIPS rendered line once on the validation build just to confirm fips=1 appears once, but 
+no code change.
 
-On the dropped first-boot oneshot / live-flip-late approach: fine, but it means "nothing runs 
-under enforcing" now depends on the flip being genuinely the last step before InSpec. So the 
-validation must prove nothing hardening-related runs after the flip, AND the SSH hard gate 
-stands: getenforce=Enforcing, relabel done, zero AVCs against sshd/chronyd/clamav/nessus/cwa/ssm, 
-and SSH actually connects with sshd reading 10-scs-hardening.conf. No SSH proof = not a pass.
-
-Show me the real grub line, then proceed.
+Apply revised Change A, then proceed with the rest (packages, config, relabel, first-boot 
+flip, InSpec) and run the enforcing validation build. Hold to the hard gate: getenforce= 
+Enforcing, relabel done, zero AVCs against sshd/chronyd/clamav/nessus/cwa/ssm, and SSH 
+actually connects with sshd reading 10-scs-hardening.conf. No SSH proof = not a pass.
