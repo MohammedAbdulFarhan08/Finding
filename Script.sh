@@ -1,14 +1,15 @@
-Approved on sudoers — apply the OS-adaptive test fix. One confirm first: ls -l /usr/etc/sudoers 
-on a built 16 image so the assumption the file exists is proven, not inferred.
+Timer answer settles it — drop the cron-hourly wrapper on SLES 16, let logrotate.timer handle 
+rotation (vendor default, same principle as SELinux). Don't seed /etc/logrotate.conf.
 
-Logrotate — hold, don't draft the fix yet. Run the two read-only checks on a built 16 image 
-first: ls -l /usr/etc/logrotate.conf (is there a vendor file to seed from), and 
-systemctl list-timers | grep logrotate (does 16 ship a logrotate.timer). The timer answer 
-decides the fix: if SLES 16 rotates via a systemd timer by default, the vendor-native fix is 
-to NOT template our cron-hourly wrapper on 16 and let the timer handle it — not to seed 
-/etc/logrotate.conf to prop up our old cron approach. Follow the vendor default here, same as 
-we did for SELinux. Show me both check results + a recommendation before drafting anything.
+But before drafting: cat /usr/etc/logrotate.conf and show me which directory it includes. This 
+is the thing that actually matters — our /etc/logrotate.d/rsyslog rule caps /var/log/messages 
+at 256 MB, and that cap only applies if the vendor config includes the directory our rule lives 
+in. If the vendor file includes /etc/logrotate.d/, we're fine as-is. If it only includes 
+/usr/etc/logrotate.d/, then just dropping the wrapper leaves our 256 MB cap dead — our rsyslog 
+rule has to move to where the timer reads it. Confirm the include path, then draft both parts:
+(1) roles: gate the cron-hourly logrotate template off SLES 16 (+ relocate the rsyslog cap file 
+IF the include path requires it), and (2) inspec: make logrotate-config /usr/etc-aware for 16, 
+same pattern as sudoers.
 
-Regression check looks solid — changes are properly 16-gated, no other OS affected, 
-selinux-apparmor untouched. Note the two latent gaps for the ticket (enforce-flip only in 
-aws hcl; Shoot/Nvidia-on-16 apparmor) — don't fix now, just so they're tracked.
+Show me the cat output + both drafts before applying. Also: the temp packer diagnostic 
+(d574afc) is flagged remove-before-MR — make sure that comes out before these go up.
