@@ -1,15 +1,14 @@
-Timer answer settles it — drop the cron-hourly wrapper on SLES 16, let logrotate.timer handle 
-rotation (vendor default, same principle as SELinux). Don't seed /etc/logrotate.conf.
+Grab it — cat /usr/lib/systemd/system/logrotate.service (and the ExecStart specifically) on 
+the next build. That line decides the whole fix, so no drafting until we have it. Keep the 
+inspec /usr/etc-aware test fix held too — I don't want logrotate-config green while the cap 
+might be dead.
 
-But before drafting: cat /usr/etc/logrotate.conf and show me which directory it includes. This 
-is the thing that actually matters — our /etc/logrotate.d/rsyslog rule caps /var/log/messages 
-at 256 MB, and that cap only applies if the vendor config includes the directory our rule lives 
-in. If the vendor file includes /etc/logrotate.d/, we're fine as-is. If it only includes 
-/usr/etc/logrotate.d/, then just dropping the wrapper leaves our 256 MB cap dead — our rsyslog 
-rule has to move to where the timer reads it. Confirm the include path, then draft both parts:
-(1) roles: gate the cron-hourly logrotate template off SLES 16 (+ relocate the rsyslog cap file 
-IF the include path requires it), and (2) inspec: make logrotate-config /usr/etc-aware for 16, 
-same pattern as sudoers.
+Once you have ExecStart, draft the full fix for my review, which needs to guarantee BOTH:
+(1) our /var/log/messages 256 MB cap is actually read by whatever the timer runs, and 
+(2) the vendor's loose /usr/etc/logrotate.d/syslog (size +4096k / rotate 99 / maxage 365) 
+doesn't double-cover or override our cap — same neutralize-the-vendor-loose-syslog logic our 
+logrotate-no-syslog-conflicts control already does for /etc.
 
-Show me the cat output + both drafts before applying. Also: the temp packer diagnostic 
-(d574afc) is flagged remove-before-MR — make sure that comes out before these go up.
+Only turn the inspec control green once the cap is provably in effect, not just once the file 
+exists where the test looks. And strip the temp diagnostic (73dff31) before any of this goes 
+to MR.
