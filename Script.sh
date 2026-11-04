@@ -1,45 +1,47 @@
-SLES 16 cross-cloud: mirror pre-check — read-only, NO builds/commits/pushes. Before we port 
-the enforce-flip provisioner and run per-partition builds, I need to know whether the SLES 16 
-packages actually resolve on the gov and ESC mirrors — same per-partition mirror risk we hit 
-on NVIDIA GovCloud. We've only ever validated against the commercial mirror (aws_commercial, 
-build #40). Evidence/paths for every answer; if something can't be confirmed read-only, say 
-what build/step would confirm it.
+Goal: deliver SLES 16 enforcing across all CDN2 target partitions, not just aws_commercial. 
+You've already validated aws_commercial (#40). The roles/inspec work is cloud-independent; the 
+only cloud-specific piece is the SELinux enforce-flip + AVC-dump provisioner, which currently 
+exists only in aws/golden.pkr.hcl. Port it to the other CDN2 templates and validate per 
+partition. Include Azure this time — add SLES 16 to the test image-list so azure builds.
 
-Context: SLES 16 targets 8 partitions. Mirrors are per-partition — commercial CloudFront, 
-us-gov-west-1.repositories.images.scs.sap (GovCloud), eusc-de-east-1.repositories.images.scs.sap 
-(ESC/EU-Sovereign). Memory notes Updates/16.0 isn't even on the commercial mirror yet, so 
-gov/esc are likely further behind.
+You have repo access and can research whatever you need — don't ask me to hand you context you 
+can find. Work autonomously. The standing rules from how we've worked this whole ticket still 
+apply:
+- Boot-critical and shared-file changes: show me the diff and wait for my ok before applying. 
+  Everything else, just do it.
+- Don't trial-and-error with builds. Do the research first, make the change right, then build 
+  to validate — not build to discover.
+- Follow the vendor default, keep changes OS/partition-gated so nothing leaks to other OSes or 
+  the commercial path, and never claim something's validated that a build hasn't proven.
+- Flag honest caveats; a green test over a silently-broken thing is the worst outcome.
 
-1. CONFIRM THE MIRROR HOSTNAMES per partition from the repo (repository-synchronization / the 
-   per-partition mirror config), so we're checking the real URLs, not assumed ones. List the 
-   mirror hostname + base path for: aws_commercial (baseline), aws_govcloud, aws_esc, and the 
-   Azure/GCP/OpenStack mirrors if they differ.
+The work:
+1. Port the enforce-flip + AVC-dump block from aws/golden.pkr.hcl into azure, gcp, and 
+   openstack golden.pkr.hcl — verbatim behaviour, it already self-gates on ID=sles + 
+   VERSION_ID=16 so it's inert on other OSes. Confirm each template's structure actually 
+   supports it where you place it (don't assume aws's layout matches the others). Show me the 
+   three diffs before applying — this is the fan-out change, I want eyes on it.
+2. Add SLES 16 cHost to the test image-list (test-c5425849-image-list.yml) for the partitions 
+   it's missing from, Azure included, so these can actually build. Show me what you're adding.
+3. Confirm, from repo logic, that all CDN2 partitions pull SLES 16 from the single commercial 
+   CloudFront endpoint at build time (we established this, but re-confirm it holds for azure/
+   gcp/openstack specifically) — so there's no per-partition build-time mirror dependency on 
+   the CDN2 path. If any partition deviates, flag it.
+4. Then validate, cheapest-signal-first, and stop if any build fails rather than churning:
+   - gcp_commercial first (proves the port on one cheap partition)
+   - openstack + openstack_kvm (validate BOTH — kvm has its own image name/boot handling)
+   - aws_govcloud + aws_esc (aws template already has the flip; before the first gov build, 
+     run a read-only build-host check that the SLES 16 Pool + SELinux stack actually resolves 
+     on the gov/esc build worker — architecture says it uses the commercial endpoint, but 
+     verify once from the right host, don't assume)
+   - azure_commercial + azure_government (needs the test-list entry from step 2)
+   Each partition's pass criteria = the #40 hard gate: getenforce=Enforcing, relabel done, 
+   zero AVC denials against sshd/chronyd/clamav/nessus/cwa/ssm, SSH connects with sshd reading 
+   the hardened drop-in, plus logrotate single-cap and sudoers green.
 
-2. RESOLVE-CHECK the SLES 16 package set on EACH mirror (gov + esc are the ones that matter; 
-   include commercial as the known-good baseline). For each mirror, confirm whether the SLES 16 
-   Pool is present and whether these packages resolve:
-   - selinux-policy-targeted
-   - policycoreutils
-   - policycoreutils-python-utils
-   - selinux-autorelabel
-   - (and the base SLES 16 product itself — the product IDs Steve's sync config added: 
-     SLES 2930, SLES_SAP 2985, sle-ha 2937, PackageHub 3137)
-   Use a read-only fetch of the mirror's repo index / Pool path (the way we confirmed the 
-   NVIDIA triplet on the gov mirror — curl the package index, grep the names). Do NOT build.
-   If you can reach the mirror indexes from here, report exact presence per package per mirror. 
-   If a mirror isn't reachable read-only from this environment, say so and tell me the exact 
-   curl/command to run from a build host that would confirm it.
+Report per partition as you go: validated / failed-and-why. Strip any temp diagnostics before 
+MR. Note anything that's a Steve/mirror or other-owner dependency (e.g. CDN1 gov/esc is a 
+separate build path, out of scope here). Keep the MRs held per the standing hold.
 
-3. VERDICT per partition: for aws_govcloud and aws_esc specifically — is SLES 16 + the full 
-   SELinux stack mirrored and resolvable (→ safe to validate there), or is the mirror behind 
-   (→ Steve/mirror-sync dependency before we can build enforcing there)? Name exactly which 
-   packages are missing where, if any.
-
-4. Also confirm whether Updates/16.0 (the updates/security pocket) is present on each mirror — 
-   since our SELinux config and pins may pull from updates, not just the base Pool, and that's 
-   the pocket memory flags as not-yet-live on commercial.
-
-Deliverable: mirror hostname list, a presence table (mirror × package), and a clear 
-per-partition verdict — which partitions are mirror-ready to build/validate now vs which are 
-blocked on mirror sync (Steve). Change nothing. This decides what we port and build next, and 
-what we hand to Steve.
+Start with the port diffs (step 1) + the test-list additions (step 2), show me both, then 
+proceed.
