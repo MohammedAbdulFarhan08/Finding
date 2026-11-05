@@ -1,47 +1,13 @@
-Goal: deliver SLES 16 enforcing across all CDN2 target partitions, not just aws_commercial. 
-You've already validated aws_commercial (#40). The roles/inspec work is cloud-independent; the 
-only cloud-specific piece is the SELinux enforce-flip + AVC-dump provisioner, which currently 
-exists only in aws/golden.pkr.hcl. Port it to the other CDN2 templates and validate per 
-partition. Include Azure this time — add SLES 16 to the test image-list so azure builds.
+Research and investigation only — do not change anything, no branch, no commits. I want the full picture before we touch it.
 
-You have repo access and can research whatever you need — don't ask me to hand you context you 
-can find. Work autonomously. The standing rules from how we've worked this whole ticket still 
-apply:
-- Boot-critical and shared-file changes: show me the diff and wait for my ok before applying. 
-  Everything else, just do it.
-- Don't trial-and-error with builds. Do the research first, make the change right, then build 
-  to validate — not build to discover.
-- Follow the vendor default, keep changes OS/partition-gated so nothing leaks to other OSes or 
-  the commercial path, and never claim something's validated that a build hasn't proven.
-- Flag honest caveats; a green test over a silently-broken thing is the worst outcome.
+Ticket STOI-14841 (azure-cli). On the Azure RHEL golden images, azure-cli is installed as an old version via pip (pip3.9 on system python, az at /usr/local/bin/az, currently 2.37.0) rather than as an rpm — rpm -qa | grep az-cli returns nothing. Tenable scans flag the stale pip version as out of compliance. The intended fix direction is to install azure-cli from the Microsoft rpm repo (packages-microsoft-com-prod) so it stays patched and clears the scan — but don’t implement anything, just investigate and propose.
 
-The work:
-1. Port the enforce-flip + AVC-dump block from aws/golden.pkr.hcl into azure, gcp, and 
-   openstack golden.pkr.hcl — verbatim behaviour, it already self-gates on ID=sles + 
-   VERSION_ID=16 so it's inert on other OSes. Confirm each template's structure actually 
-   supports it where you place it (don't assume aws's layout matches the others). Show me the 
-   three diffs before applying — this is the fan-out change, I want eyes on it.
-2. Add SLES 16 cHost to the test image-list (test-c5425849-image-list.yml) for the partitions 
-   it's missing from, Azure included, so these can actually build. Show me what you're adding.
-3. Confirm, from repo logic, that all CDN2 partitions pull SLES 16 from the single commercial 
-   CloudFront endpoint at build time (we established this, but re-confirm it holds for azure/
-   gcp/openstack specifically) — so there's no per-partition build-time mirror dependency on 
-   the CDN2 path. If any partition deviates, flag it.
-4. Then validate, cheapest-signal-first, and stop if any build fails rather than churning:
-   - gcp_commercial first (proves the port on one cheap partition)
-   - openstack + openstack_kvm (validate BOTH — kvm has its own image name/boot handling)
-   - aws_govcloud + aws_esc (aws template already has the flip; before the first gov build, 
-     run a read-only build-host check that the SLES 16 Pool + SELinux stack actually resolves 
-     on the gov/esc build worker — architecture says it uses the commercial endpoint, but 
-     verify once from the right host, don't assume)
-   - azure_commercial + azure_government (needs the test-list entry from step 2)
-   Each partition's pass criteria = the #40 hard gate: getenforce=Enforcing, relabel done, 
-   zero AVC denials against sshd/chronyd/clamav/nessus/cwa/ssm, SSH connects with sshd reading 
-   the hardened drop-in, plus logrotate single-cap and sudoers green.
+This already happened once — treat that as the main clue. It’s a recurrence of a ticket closed as “fixed” mid-2026, where the same pip→rpm migration was supposedly done. It came back on a newer image. The note from that old ticket: azure-cli gets touched in several places from base through hardening, with duplicated and possibly conflicting code. So the single most important thing: find EVERY place azure-cli is installed, modified, pinned, or pathed across all the repos — base build, provisioners, roles/hardening, inspec, wherever — and show me how the current pip install actually lands on the image and why the earlier rpm migration didn’t stick (overwritten, a leftover pip step, ordering, etc.).
 
-Report per partition as you go: validated / failed-and-why. Strip any temp diagnostics before 
-MR. Note anything that's a Steve/mirror or other-owner dependency (e.g. CDN1 gov/esc is a 
-separate build path, out of scope here). Keep the MRs held per the standing hold.
+Scope / blast radius. The ticket names one image (Golden-CDN2-SCS-RHEL-9.6-Base), but I’m told this likely affects ALL azure-cli installs, not just that one. Map the real footprint: which OS families, images, clouds, and partitions install azure-cli, and whether the install path is shared, so I know the true blast radius of a pip→rpm switch.
 
-Start with the port diffs (step 1) + the test-list additions (step 2), show me both, then 
-proceed.
+FIPS. I’ve been warned azure-cli “gets funky on FIPS,” and our build hosts recently moved to a FIPS metal cluster. Investigate the FIPS implications for both the current pip install and the proposed MS-repo rpm (python version, the python3.12 deps the rpm pulls, any crypto/cipher issues).
+
+Fix viability. Check whether packages-microsoft-com-prod is defined/available/mirrored for the relevant OSes and partitions, what version + dependencies the rpm pulls, and whether the pip install can be removed cleanly without conflict.
+
+Report back with: (1) the full map of where az-cli is touched and why it recurred, (2) a proposed approach that fixes it for good, (3) the blast radius, and (4) an explicit list of open questions or things only John / the platform owners would know.
