@@ -1,8 +1,6 @@
-No new investigation needed — the 3-day-old draft stands. Just re-check the one thing that was blocking it: has SCSEC-8910 (John’s dual-arch pipeline) merged to main yet? 3 days ago it was only on branch c5406745-arm and the Ubuntu ARM build was held on it. John said this morning he’s nearly done and rushing Ubuntu, so check main + his branches and tell me whether the dual-arch pipeline is now landed.
+Both !382 and !111 merged back-to-back (STOI-14841). Quick check, no changes:
 
-If it’s merged → confirm target_architecture works off main, and get ready to build (hold the actual build for my go). Also live-verify the arm64 ISO path and that the arm64 packages resolve from our mirror (that was config-confirmed but never live-tested).
-If it’s still on branch → stay held, and tell me what specifically is missing.
+Has a fresh image built from main since !382 merged — i.e. does an image exist now that actually contains the MS-repo rpm fix, or is the latest built image still pre-fix?
+When does the InSpec guard (!111) run — only as part of a build against the freshly-built image, or also against existing/published images on a schedule? That tells me whether the back-to-back merge can red a pipeline before a new image builds.
 
-Two decisions I’ll make, flag them don’t investigate: (1) I’ll confirm the Graviton type — you proposed t4g.2xlarge, hold unless you see a reason to change. (2) The Pro-FIPS-amd64-only issue where ARM blocks enable_fips — surface exactly what that means for shipping: do ARM Ubuntu images go out non-FIPS, and is that a problem for the gov/NS-2 consumers? That’s the real open question, more than anything code-side.
-
-Then raise the ARM subtasks and have the branch ready. Build held for my word.
+If a post-!382 image already built (guard passes against it) → we’re clean, nothing to do. If not, and InSpec can run against pre-fix images → flag it, and the fix is just to trigger/await a fresh build so the guard validates against an image that has the rpm. Tell me which case we’re in.
