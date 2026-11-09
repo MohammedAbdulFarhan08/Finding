@@ -1,6 +1,17 @@
-Before I give the MR go, two coverage checks:
+Before we delete the boot-test RG, I need a proper evidence pack for STOI-14841 showing the azure-cli fix works. Do not tear down c5425849-bt-8-10 until the live evidence from the 8.10 and 10.2 VMs is captured and saved.
 
-Are base / hana / sap the ONLY presets any azure RHEL image builds with? Specifically — do any azure RHEL variants build with the Nvidia, Gardener-Shoot, or cHost presets? If yes, they still lack MS-prod and would still ship EPEL’s azure-cli — same miss-a-variant pattern that let 6203 recur. If so, apply the same MS-prod+exclude+gpgkey treatment there. If base/hana/sap is the complete set, confirm that and we’re done.
-8.10 and 10.2 were dep-resolve dry-runs, not boot-tests — resolve proves install, not that az runs under FIPS. If the December release ships azure 8.10 or 10.2 images, do one boot-test per major (FIPS on, az real command + rpm -qf) so runtime is proven on all three majors, not just 9.6. If those majors aren’t in the December azure scope, tell me and we defer them.
+What I need: one clean artifact (a markdown file I can attach to the ticket and reference from the MR) with real command output for each validated image: 9.6 base/hana/sapapp, 8.10, and 10.2. It should show:
 
-Once those two are answered, go ahead and tidy the sap changelog line and I’ll give the MR go.
+that az is the Microsoft rpm from the Microsoft repo (not EPEL, not pip), with its version
+that the old pip install is gone
+that FIPS is on
+that az works for real under FIPS
+the build job and image version each result came from
+
+Also include the InSpec guard’s negative and positive test results, and the evidence that the dependency closure resolved from our CDN2 mirror with no outside reach.
+
+For the 8.10 and 10.2 VMs, capture fresh live output now. For 9.6, where the VMs are already gone, reconstruct from the logged outputs in this session and the build logs, and label clearly that those were captured at the time rather than re-run. Don’t fabricate or paraphrase any output, and say plainly if something can’t be recovered.
+
+Redact tenant IDs, subscription IDs, tokens, and anything else sensitive before it goes in the file, since this will be attached to a Jira ticket.
+
+When it’s saved, show me the file and tell me which items are live-captured vs. recovered. Then tear down the RG. Still no MR until I approve.
