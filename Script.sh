@@ -1,24 +1,8 @@
-The ARM repo-sync is confirmed green — go ahead and run the first ARM build. Ubuntu 24.04 Base, aws_commercial only, exactly as staged on c5425849-ubuntu24-arm. This is a real build, work carefully.
+Goal: make the Ubuntu sources arch-conditional in repository-management so aarch64 resolves against default-ports while amd64 continues to resolve against default, so the ARM build’s dist-upgrade pulls cleanly. The locus is the Ubuntu sources template (ubuntu-sources.list.j2 per the diagnosis) — but investigate how it renders and everything that consumes it before changing anything.
 
-Quick pre-flight (you already verified most of this — just reconfirm):
+Constraints:
 
-pt is updated to the aarch64-aware build (pt-go v0.1.7+) — check the version before running.
-The aws-commercial ARM Vault path is in place (I added it).
-The ARM row is still scoped: architecture: [aarch64], cloud_partition: [aws_commercial], Base only, enable_fips: true, t4g.2xlarge — no other Ubuntu-24 row has aarch64.
-
-Build:
-
-Flip create_image → true on the aws-commercial Base ARM row.
-Run: pt --clouds=aws-com --code-prefix=~/main --arm
-Stay on the branch — no push, no MR yet.
-
-Watch end-to-end and report at each stage:
-
-ISO install — native KVM now, should be normal speed, not the emulated hour.
-repository-management — this was the exact failure point before and the thing the sync just fixed; watch it specifically.
-FIPS on aarch64 — confirm the arm64 FIPS mirror resolves cleanly.
-InSpec/scan result.
-If it fails anywhere, capture the stage + exact error and STOP — no blind retry.
-If green: confirm the image name rendered Golden-ARM-CDN2-SCS-Ubuntu-24.04-Base.
-
-Hold for my go on anything past the build — boot-test VM, MR, further Vault. Report the build result first.
+Scope it surgically. Only reroute when arch is aarch64 and OS is Ubuntu. amd64 and every other OS (RHEL, SLES) must render byte-for-byte identical to today — prove that with a before/after, don’t assume it.
+Cover the base suite plus -security and -updates (noble, noble-security, noble-updates).
+Stay on branch c5425849-ubuntu24-arm. No commit, no push. Investigate → analyze blast radius → propose the diff plus the rendered amd64 and aarch64 sources for my review.
+Don’t touch the mirror side. Steve’s default/ InRelease advertising arm64 is a separate mirror cleanup, harmless once arm64 stops querying default/, and not a dependency for this fix.
