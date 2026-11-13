@@ -1,5 +1,24 @@
-Before committing: run pre-commit and yamllint on both changed files and fix anything they flag — I don’t want a lint failure surfacing at MR time. Then rebase the branch on current main (8910 just landed) and confirm the architecture key + pipeline flag you’re using actually match what merged, not what was on John’s branch. If the merged mechanism differs from the draft, stop and tell me before changing anything.
+The ARM repo-sync is confirmed green — go ahead and run the first ARM build. Ubuntu 24.04 Base, aws_commercial only, exactly as staged on c5425849-ubuntu24-arm. This is a real build, work carefully.
 
-Then you may: commit the two drafts on c5425849-ubuntu24-arm. Hold here — no push, no MR, no Vault writes, and do NOT flip create_image to true or trigger a build yet. Report: lint results, whether the merged mechanism matched the draft, and the final diff. I’ll review before we push and before anything builds.
+Quick pre-flight (you already verified most of this — just reconfirm):
 
-Separately, point yourself at John’s companion ARM doc to verify the --arm pipeline flag and the exact image-list field names — I’ll get you the link. Flag any mismatch with the draft.
+pt is updated to the aarch64-aware build (pt-go v0.1.7+) — check the version before running.
+The aws-commercial ARM Vault path is in place (I added it).
+The ARM row is still scoped: architecture: [aarch64], cloud_partition: [aws_commercial], Base only, enable_fips: true, t4g.2xlarge — no other Ubuntu-24 row has aarch64.
+
+Build:
+
+Flip create_image → true on the aws-commercial Base ARM row.
+Run: pt --clouds=aws-com --code-prefix=~/main --arm
+Stay on the branch — no push, no MR yet.
+
+Watch end-to-end and report at each stage:
+
+ISO install — native KVM now, should be normal speed, not the emulated hour.
+repository-management — this was the exact failure point before and the thing the sync just fixed; watch it specifically.
+FIPS on aarch64 — confirm the arm64 FIPS mirror resolves cleanly.
+InSpec/scan result.
+If it fails anywhere, capture the stage + exact error and STOP — no blind retry.
+If green: confirm the image name rendered Golden-ARM-CDN2-SCS-Ubuntu-24.04-Base.
+
+Hold for my go on anything past the build — boot-test VM, MR, further Vault. Report the build result first.
