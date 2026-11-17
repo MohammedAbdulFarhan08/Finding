@@ -1,9 +1,11 @@
-Proceed with the bare-metal ARM Ubuntu 24 prep on the tree ~/c5425849-arm-metal (branch c5425849-arm-metal), staging only — do NOT run pt, do NOT trigger, stop before any build.
+SLES 16 is validated and John cleared it to merge. Do the pre-MR cleanup on the SLES 16 branches (c5425849-sles16 across packer, ansible/roles, ansible/playbooks, infrastructure), then prep for MRs. Investigate and show me the plan + diffs BEFORE committing anything — do not raise the MRs yet.
 
-Flip create_image to true on the Ubuntu-24.04-QEMU aws_metal row.
-Create branch c5425849-arm-metal on BOTH the roles and infrastructure repos, and cherry-pick the 5 Base-ARM commits that aren’t in main (grub-efi arm64, the default→default-ports sources reroute, the aws-ssm-agent + aws-cloudwatch-agent URL arch-conditionals, and the nessus-agent role package-name fix) — carry their CHANGELOG entries too.
-Add the qemu-build-host role aarch64 fixes you identified (the install-packer.yml windows-update stat path, and anything else from your audit) — scoped to aarch64, amd64 byte-identical.
-Push both branches to origin (they don’t exist there yet — Concourse’s git resource fails without them).
-Run full pre-commit + ansible-lint, confirm 0 failures.
+Cleanup to do:
 
-Then STOP and show me: the cherry-pick result, the qemu-build-host diff, and confirmation both branches pushed clean. Do NOT run pt or trigger — the build still gates on the nessus arm64 deb landing in the bucket, which is in progress separately. We stage everything now and trigger once the deb’s up and the role name matches.
+Strip the SELinux AVC debug dump from all four packer templates (it was a diagnostic, not for production) — show me each removal.
+Reset all test-only pointers in test_c5425849_build.yml back to main — the branch pointers for roles/playbooks/infra/inspec and any test image-list pointer. Nothing test-only (local build-file pointers, the test image-list additions) can go into an MR. List exactly what you’re resetting.
+Restore the harden.yml SLES-15 STIG block — it was commented out (gated os_family=='suse' so it covered 15 AND 16); bring it back as a major=='15'-gated invocation so merging doesn’t strip STIG from SLES 15 production. This is critical — confirm the gate is major=='15', not os_family=='suse'.
+Rebase all four repos onto current main and resolve any conflicts; report what conflicted. Flag any CHANGELOG collisions like we hit before.
+Any other test-only / diagnostic artifacts you find staged on these branches (collectd guards, dead-end commits), list them for me to decide — don’t drop silently.
+
+Then STOP and show me: the full cleanup diff per repo, the rebase result + any conflicts, and confirmation the SLES-15 STIG block is restored and major=='15'-gated. Do NOT raise MRs, do NOT merge — I review first, then we bundle roles+packer+infra+inspec and raise them together (roles merges first/with the others, per the bundling rule).
