@@ -1,14 +1,14 @@
-RHEL 10.2 Base ARM (aarch64), aws_commercial only — investigate-first, change nothing yet, report back. Working tree ~/c5425849-rhel-arm (branch c5425849-rhel-arm, fresh from main). This is SCSEC-8913’s first image; Base-first discipline like we did on Ubuntu — RHEL 10.2 Base, aws_commercial only, do NOT fan out to HANA/SAPAPP or other clouds.
+SLES SP7 ARM (aarch64), aws_commercial, Base/cHost — investigate-first, change nothing, report back. Working tree ~/c5425849-sles-arm (branch c5425849-sles-arm, fresh from main). This is SCSEC-8911. Confirm the exact SLES version this targets first (ticket says SP7 = SLES 15 SP7, NOT SLES 16 — flag if the image-list says otherwise).
 
-First, study the Ubuntu 24 ARM work as a reference for the approach — look at branch c5425849-ubuntu24-arm and the metal branch c5425849-arm-metal. Understand how each class of ARM problem was solved there: the arch-conditional grub-efi package split, the repository sources arch routing, the agent download-URL arch conditionals (aws-ssm/cloudwatch), and the nessus-agent package-name arch fix. Learn the pattern and where each fix lives — but do NOT cherry-pick or copy Ubuntu code. RHEL is a different OS family (dnf/yum, different repos, different grub packages); every fix needs its RHEL equivalent, found fresh.
+Priority item — derive the nessus filename first and report it immediately: the nessus-agent role pulls a per-OS package from s3://sap-core-images-binaries/packages/tenable/. For SLES aarch64, work out the exact filename the role would request (version pinned in playbooks/nessus-agent.yml, SUSE/SLE suffix, aarch64 token, .rpm). I need this exact string to request the upload — report it before anything else.
 
-Then investigate what RHEL 10.2 needs for aarch64 and report — fixes scoped to aarch64, amd64 byte-identical:
+Then study the Ubuntu and RHEL ARM work as reference for the approach (branches c5425849-ubuntu24-arm, c5425849-rhel-arm) — learn how each ARM problem class was solved, do NOT copy the code (SLES is a third OS family: zypper, SUSE repos, its own grub/EFI). Then audit what SLES SP7 needs for aarch64 and report, scoped aarch64-only / amd64 byte-identical:
 
-Image-list row: is there a RHEL-10.2 Base row for aws_commercial? Does it have aarch64 in architecture and create_image handling? What needs adding (mirror the dedicated-ARM-row approach from Ubuntu Base).
-Repos: how does repository-management build RHEL/dnf repo URLs, and is there a RHEL arm64 arch-routing issue like Ubuntu’s default→default-ports? Probe whether RHEL 10.2 aarch64 CDN2 content actually resolves (BaseOS/AppStream arm64) — the Ubuntu equivalent was the 403/ports-tree problem. Report what the RHEL arm64 repo paths look like and whether they’re reachable.
-Grub/EFI: RHEL’s arm64 grub is grub2-efi-aa64 / shim-aa64 (not Ubuntu’s grub-efi-arm64). Find where base installs grub-efi packages for RHEL and what the aarch64 equivalent needs.
-Agents: audit the RHEL path for amd64/x86-hardcoded agent packages/URLs (same class as the Ubuntu aws-ssm/cloudwatch fixes) — ssm, cloudwatch, nessus, anything arch-pinned.
-Nessus: the role pulls nessus per-OS; RHEL uses an rpm (el8/el9, aarch64), a different artifact than the Ubuntu deb. Report the exact RHEL arm64 nessus filename the role would request so I can get it uploaded (separate from the Ubuntu deb already pending).
-Packer: John said RHEL ISO-install for Packer was already done — confirm the RHEL aarch64 pkrvars/template path exists and what, if anything, is missing for a metal/commercial aarch64 RHEL build.
+Image-list: is there a SLES SP7 Base/cHost row for aws_commercial, and does it have aarch64 in architecture? (SLES is cHost-only in these lists per prior work.) Base-first discipline — only the Base/cHost ARM row, nothing fanned out.
+Repos: how does repository-management build SUSE/zypper repo URLs, and is there a SLES arm64 arch-routing issue? Probe whether SLES SP7 aarch64 CDN2 content resolves live.
+Grub/EFI: SLES’s arm64 grub/shim equivalents vs the x86 packages.
+Agents: audit the SLES path for amd64-hardcoded agent packages/URLs.
+Packer: SP7 aarch64 pkrvars/ISO — note the SP7 aarch64 ISO is already in S3 (SLE-15-SP7-Full-aarch64-GM-Media1.iso); confirm the template/pkrvars path.
+FIPS/SELinux/AppArmor and any SLES-specific posture — flag but don’t solve, note which are other-owner.
 
-Then STOP and show me: a per-item report of what RHEL 10.2 ARM needs (reusing the Ubuntu pattern, RHEL-specific code), the RHEL arm64 nessus rpm filename, and a proposed change plan. Do NOT edit, commit, run pt, or trigger — I review the plan first.
+Then STOP and show me: the nessus filename (up top), the per-item report, and a proposed change plan. Do NOT edit, commit, run pt, or trigger.
