@@ -1,5 +1,9 @@
-Done — the technical-user credential is validated end-to-end. Ran the new TTU cred through a real openstack-kvm build (RHEL 8.10 Base): Keystone auth, Glance upload (image came up active, 4.7GB), Nova flavor/image/volume + server launch, and Barbican bootstrap all passed. The cred fully replaces the person-tied one in Vault (core-images/shared/openstack_ext_dev), John’s old cred kept for now as rollback.
+Add a short note to documentation/infrastructure/openstack-tech-user.md (on the branch the doc is on) recording where the TTU’s login password is stored, so the team knows where to find it to manage the account.
 
-Also wrote it up in documentation/infrastructure/openstack-tech-user.md — account details, setup steps, keypair registration, and how to rotate the cred. Holding the MR for it until the release goes out tomorrow.
+Facts:
 
-A few bumps along the way: local repos were behind main (fixed with a pull); a stale upload_host IP in my pipeline (repointed to the DNS name); and the TTU needed its own Nova keypair registered. All resolved.
+The TTU login password (for svcx_golden_image@sci-dev.scs.sap) is stored in Vault at core-images/shared/technical-users-golden-image (mount kv_core_concourse). It holds the username + password.
+This is SEPARATE from the application credential, which is at core-images/shared/openstack_ext_dev and is what the pipeline uses. Make the distinction clear: the app-cred = what the pipeline authenticates with; the login password = for a human to sign into Keycloak/the dashboard as the TTU to manage the account (rotate the app-cred, register keypairs, etc).
+Put this in the Account Details section (or near it) — wherever it reads most naturally alongside the existing app-cred/Vault references.
+
+Important: reference the Vault PATH only. Do NOT write the actual password (or the app-cred secret) into the doc. Show me the added lines before committing.
