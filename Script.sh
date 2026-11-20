@@ -1,15 +1,11 @@
-Steve/John want an inventory of the NON-image-building pipelines (the mirroring/sync/support pipelines, not the golden-image build ones) — a bunch have been red for a while, and we need to normalize alerting and assign owners. This is read-only inventory + diagnosis, change nothing.
+Two docs to place in the documentation repo, built from the two reports I already have (pipeline-secrets-inventory.md and nonbuild-pipeline-health.md, both genericized). John’s c5406745-dynamic-build-keys MR (!141) is now MERGED, so the new structure exists.
 
-Work from a current checkout of main (pull main first so it’s fresh). This is a report, not a code change — don’t create a feature branch or modify any repo.
+Workflow: pull main --ff-only first to get !141’s merged structure. Then copy main into ticket folder ~/c5425849-pipeline-docs, branch c5425849-pipeline-docs (do NOT work in ~/main or use a default name).
 
-In the Concourse core-images team, identify all the NON-image-building pipelines — e.g. the clamav-cvd-mirroring (commercial/gov/esc), ansible-galaxy-mirroring (commercial/gov/esc), repository-synchronization (+cdn1), trivy-grype-mirroring, container-management, aws-image-validation (cdn1/cdn2), image-sharing-* , and any other support/mirror/sync pipelines. Exclude the actual golden-image build pipelines and the personal testing pipelines (c5425849).
+Doc 1 — secret inventory → place the genericized inventory at documentation/infrastructure/keys/ matching John’s existing naming there (he used uppercase like AWS-STS.md / VAULT.md — confirm the actual files present and match the style, e.g. PIPELINE-SECRETS-INVENTORY.md). Re-run the read-only Vault sweep to refresh the verification date before committing (this is mandatory per my earlier instruction — the current date in the doc is from Nov 20).
 
-For each one, produce a table with:
+Doc 2 — pipeline docs → John wants an documentation/infrastructure/pipelines/ folder structured as: (a) a total-inventory.md that lists ALL the core-images pipelines at a glance (the quick index, since the Concourse UI is unwieldy); (b) ONE general build-image-pipeline.md for the build pipelines — don’t list each individually, just note it contains the testing / pre-release / image-creation(release) flavors; (c) a per-pipeline .md for each NON-build support pipeline (clamav-cvd-mirroring, clamav-sync, ansible-galaxy-mirroring, repository-synchronization, aws-image-validation, etc.) carrying the content from my health report (purpose, status, root cause, owner/unowned, alerting). Reshape my existing nonbuild-pipeline-health.md content into this structure.
 
-Pipeline name and what it does (purpose).
-Current status — is the latest build red/green, and if red, HOW LONG it’s been failing (how many builds / since when).
-Why it’s failing — trace the actual error from the build logs (e.g. the ansible-galaxy S3 config profile could not be found cred error, the clamav 1.5.5 rpm conflict, ECR-not-bootstrapped, etc.). Group common root causes.
-Owner — who owns it today, or flag “UNOWNED” if no clear owner. Check CODEOWNERS / recent committers / pipeline config for clues.
-Alerting — does it have failure alerts/notifications configured, and are they firing correctly.
+Before committing — re-evaluate everything: re-read the placed files end to end, confirm: (1) both docs sit at the correct paths matching John’s actual repo structure (check what !141 created, don’t assume); (2) no personal identifiers slipped back in; (3) the secret-inventory verification date is freshly swept; (4) the pipeline structure matches John’s spec (one build entry, per-non-build files, total-inventory index); (5) paths/links inside the docs are correct. Show me the full file tree + diffs and your re-evaluation findings.
 
-Order it: longest-red / unowned first (the urgent ones). Then a summary grouping the failures by root cause (credential/bootstrap vs packaging vs other), so we can see what’s a quick fix vs needs an owner. Read-only — inspect Concourse + repo config, run no pipelines, change nothing.
+If everything looks good after that re-check, go ahead and raise the MR(s) — but tell me first whether you’re doing this as one MR or two, and recommend which. Then stop and show me the MR before it’s submitted for review if the tool allows, or confirm what you raised.
