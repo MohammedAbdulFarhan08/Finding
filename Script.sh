@@ -1,13 +1,7 @@
-Steve wants a full inventory of all secrets our pipelines use and their Vault locations — context: UCIS force-deactivated static long-lived IAM keys, pipelines broke, and the team wants everything moved to dynamic, centrally-updated Vault paths so this can’t break us again. Read-only, change nothing.
+Good inventory. Before I share it, run a READ-ONLY verification sweep against Vault to harden the two things you flagged as inferred — change nothing, only vault kv get / vault kv list:
 
-The TARGET pattern is already established — John moved the ECR keys to core-build/service-accounts/<svc-account> (e.g. ((core-build/service-accounts/svc-ecr-concourse.aws_access_key_id))). Concourse consumes these directly, and they’re dynamically/centrally updated. That’s the “good” state. Steve also wants all the OLD per-pipeline secret paths cleaned up once things are migrated.
+Pin down the real service-accounts tree location. You inferred the physical path (team-relative core-images/core-build/service-accounts/... vs instance-shared shared/core-build/...). Actually resolve it: list/get the paths the Tier-2 ECR refs point at (core-build/service-accounts/svc-ecr-concourse, sms-build/service-accounts/..., service-accounts/...) and confirm the exact mount + path that exists and is populated. I need the real paths in the doc, not inferred ones.
+Confirm each Tier-1 static key is actually live vs stale. For every Tier-1 path (the shared/coreservices-images-*/aws-svc-image-creation ones and the per-pipeline vault_variables AWS key fields), vault kv get to confirm it exists and holds a real key — and note the secret’s last-updated/version if Vault exposes it, so we can tell which are stale leftovers vs still-in-use. Don’t print the secret values — just confirm presence + path + version/age.
+Also confirm the Row 14 release-ansible-roles/vault_ecr straggler actually exists on its own old path (not already moved).
 
-Inventory every secret/credential the pipelines reference, and for each capture:
-
-What it is (AWS IAM key, OpenStack app-cred, ECR key, API token, etc.) and its purpose.
-Its exact Vault path (mount + path), and whether it’s on the NEW core-build/service-accounts/... pattern or an OLD per-pipeline path.
-Static long-lived key (at-risk from UCIS) vs already dynamic/central.
-Which pipelines/clouds consume it.
-Migration status: already on core-build/service-accounts (done — like ECR), or still on an old path and needs moving. For the old ones, note the old path that can be cleaned up after migration.
-
-Trace how Concourse resolves secrets (((...)) references), list every distinct one, and give me a table I can share with the team. Order it: at-risk static keys still on old paths first (urgent), then already-migrated ones. Don’t modify anything — inventory + migration-status + cleanup-list only.
+Report: the confirmed real paths for the service-accounts tree, a clean Tier-1 table with each key’s verified path + live/stale status, and the Row 14 confirmation. Read-only, never print secret values, change nothing.
