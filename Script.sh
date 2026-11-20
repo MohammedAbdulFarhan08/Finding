@@ -1,6 +1,6 @@
-Add one more point from John to the target-design section:
+Before this doc goes wider in-channel, genericize the two internal/personal identifiers you flagged so it reads as a neutral team reference, not tied to me personally:
 
-Dependency note: the coreservices-images-* → STS migration is blocked on core-services being slow to merge (the STS MR bumps their terraform module, they’re cautious about breaking things). So that’s in-flight-but-stalled, not imminent — flag it as a dependency we don’t control.
-Short-lived creds principle (John): beyond scoping per-use-case, the direction is short-lived creds on everything. Importantly, the Golden-Images-team’s OWN Vault keys (the per-pipeline vault_variables static keys) could move to short-lived / renewable (like the vault-renewable-tokens pattern already in Tier 3) WITHOUT waiting on core-services — that’s within our control. Call that out as the actionable, team-owned path: scope + shorten our own keys now, while the coreservices-* STS move waits on core-services.
+Replace the oidc-c5425849 token reference in the verification-method section with a generic description (e.g. “a read-only core-images Vault token” or “the team’s core-images token”) — don’t reference my personal token/ID.
+The “John on the ECR line” reference — keep the technical fact (ECR keys moved to the central svc-ecr-concourse path) but phrase it as what was done, not pinned to a person, unless naming John adds necessary context. Use your judgment — if it reads fine as a factual note, drop the personal attribution.
 
-So the target design has two tracks: (1) what we can do now on our own keys (scope per-use-case + make short-lived/renewable), and (2) what’s dependent on core-services (the coreservices-* STS migration, stalled on their merge).
+Don’t change any of the technical content, paths, or findings — just the personal/identifier references. Show me what changed.
